@@ -1,0 +1,1066 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Dashboard</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            transition: background 0.3s, color 0.3s;
+        }
+
+        /* Theme Variables */
+        body.light-orangered {
+            --bg-primary: #fff5f0;
+            --bg-secondary: #ffffff;
+            --bg-card: #ffffff;
+            --text-primary: #2d2d2d;
+            --text-secondary: #666666;
+            --accent: #ff4500;
+            --accent-hover: #cc3700;
+            --border: #ffe4d6;
+            --success: #28a745;
+            --danger: #dc3545;
+            --shadow: rgba(255, 69, 0, 0.1);
+        }
+
+        body.dark-orangered {
+            --bg-primary: #1a1a1a;
+            --bg-secondary: #242424;
+            --bg-card: #2d2d2d;
+            --text-primary: #ffffff;
+            --text-secondary: #b0b0b0;
+            --accent: #ff6347;
+            --accent-hover: #ff4500;
+            --border: #3d3d3d;
+            --success: #4caf50;
+            --danger: #f44336;
+            --shadow: rgba(0, 0, 0, 0.3);
+        }
+
+        body.light-green {
+            --bg-primary: #f0f9f4;
+            --bg-secondary: #ffffff;
+            --bg-card: #ffffff;
+            --text-primary: #1e3a2e;
+            --text-secondary: #5a7a6a;
+            --accent: #2ecc71;
+            --accent-hover: #27ae60;
+            --border: #d4edda;
+            --success: #28a745;
+            --danger: #dc3545;
+            --shadow: rgba(46, 204, 113, 0.1);
+        }
+
+        body.dark-green {
+            --bg-primary: #0d1f17;
+            --bg-secondary: #1a2f25;
+            --bg-card: #243b2f;
+            --text-primary: #e8f5e9;
+            --text-secondary: #a5d6a7;
+            --accent: #4caf50;
+            --accent-hover: #66bb6a;
+            --border: #2e4a3a;
+            --success: #81c784;
+            --danger: #e57373;
+            --shadow: rgba(0, 0, 0, 0.4);
+        }
+
+        body.light-dark {
+            --bg-primary: #f5f5f5;
+            --bg-secondary: #ffffff;
+            --bg-card: #ffffff;
+            --text-primary: #212121;
+            --text-secondary: #757575;
+            --accent: #424242;
+            --accent-hover: #212121;
+            --border: #e0e0e0;
+            --success: #4caf50;
+            --danger: #f44336;
+            --shadow: rgba(0, 0, 0, 0.08);
+        }
+
+        body.dark-dark {
+            --bg-primary: #121212;
+            --bg-secondary: #1e1e1e;
+            --bg-card: #2a2a2a;
+            --text-primary: #ffffff;
+            --text-secondary: #b3b3b3;
+            --accent: #bb86fc;
+            --accent-hover: #9965f4;
+            --border: #3a3a3a;
+            --success: #03dac6;
+            --danger: #cf6679;
+            --shadow: rgba(0, 0, 0, 0.5);
+        }
+
+        body.light-white {
+            --bg-primary: #fafafa;
+            --bg-secondary: #ffffff;
+            --bg-card: #ffffff;
+            --text-primary: #333333;
+            --text-secondary: #666666;
+            --accent: #2196f3;
+            --accent-hover: #1976d2;
+            --border: #e0e0e0;
+            --success: #4caf50;
+            --danger: #f44336;
+            --shadow: rgba(0, 0, 0, 0.05);
+        }
+
+        body.dark-white {
+            --bg-primary: #0a0a0a;
+            --bg-secondary: #1a1a1a;
+            --bg-card: #242424;
+            --text-primary: #f5f5f5;
+            --text-secondary: #9e9e9e;
+            --accent: #64b5f6;
+            --accent-hover: #42a5f5;
+            --border: #333333;
+            --success: #66bb6a;
+            --danger: #ef5350;
+            --shadow: rgba(0, 0, 0, 0.6);
+        }
+
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        /* Header */
+        .header {
+            background: var(--bg-card);
+            padding: 20px 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px var(--shadow);
+            margin-bottom: 20px;
+            border: 1px solid var(--border);
+        }
+
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+
+        .header-title h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .header-title h1 i {
+            color: var(--accent);
+        }
+
+        .theme-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .theme-btn {
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .theme-btn:hover {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+
+        .theme-btn.active {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+
+        .color-palette {
+            display: flex;
+            gap: 8px;
+        }
+
+        .color-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            border: 2px solid var(--border);
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .color-btn:hover {
+            transform: scale(1.1);
+        }
+
+        .color-btn.active {
+            border: 3px solid var(--accent);
+            box-shadow: 0 0 0 2px var(--bg-card);
+        }
+
+        .color-orangered { background: linear-gradient(135deg, #ff4500, #ff6347); }
+        .color-green { background: linear-gradient(135deg, #2ecc71, #27ae60); }
+        .color-dark { background: linear-gradient(135deg, #424242, #212121); }
+        .color-white { background: linear-gradient(135deg, #2196f3, #1976d2); }
+
+        .header-controls {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .date-filter {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            background: var(--bg-secondary);
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+
+        .date-filter input {
+            padding: 6px 10px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            background: var(--bg-card);
+            color: var(--text-primary);
+            font-size: 13px;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 14px;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+        }
+
+        .status-badge {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .status-running {
+            background: var(--success);
+            color: white;
+        }
+
+        .status-stopped {
+            background: var(--danger);
+            color: white;
+        }
+
+        .pulse {
+            width: 8px;
+            height: 8px;
+            background: white;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        /* Stats Grid */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat {
+            background: var(--bg-card);
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            box-shadow: 0 2px 6px var(--shadow);
+        }
+
+        .stat-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-icon {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            background: var(--accent);
+            color: white;
+            opacity: 0.9;
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .stat-value.positive { color: var(--success); }
+        .stat-value.negative { color: var(--danger); }
+
+        /* Main Layout */
+        .main {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: var(--bg-card);
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            box-shadow: 0 2px 6px var(--shadow);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .card-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .card-title i {
+            color: var(--accent);
+        }
+
+        .chart-container {
+            height: 320px;
+            position: relative;
+        }
+
+        /* Active Trade */
+        .active-trade {
+            background: var(--accent);
+            color: white;
+            padding: 16px;
+            border-radius: 8px;
+            margin-bottom: 12px;
+        }
+
+        .active-trade-header {
+            font-weight: 600;
+            font-size: 15px;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .trade-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .trade-item {
+            background: rgba(255,255,255,0.15);
+            padding: 10px;
+            border-radius: 6px;
+        }
+
+        .trade-label {
+            font-size: 10px;
+            opacity: 0.8;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .trade-value {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        /* Market Grid */
+        .market-grid {
+            display: grid;
+            gap: 10px;
+        }
+
+        .market {
+            background: var(--bg-secondary);
+            padding: 12px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border: 1px solid var(--border);
+        }
+
+        .market-name {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .market-score {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .score-excellent { background: var(--success); color: white; }
+        .score-good { background: #2196f3; color: white; }
+        .score-fair { background: #ff9800; color: white; }
+        .score-poor { background: var(--danger); color: white; }
+
+        /* Table */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            background: var(--bg-secondary);
+            padding: 10px;
+            text-align: left;
+            font-size: 11px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            font-weight: 600;
+            border-bottom: 1px solid var(--border);
+        }
+
+        td {
+            padding: 12px 10px;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+            color: var(--text-primary);
+        }
+
+        tr:hover {
+            background: var(--bg-secondary);
+        }
+
+        .trade-win { color: var(--success); font-weight: 600; }
+        .trade-loss { color: var(--danger); font-weight: 600; }
+
+        /* Logs */
+        .logs {
+            max-height: 320px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+
+        .log {
+            padding: 8px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            gap: 8px;
+        }
+
+        .log-time {
+            color: var(--text-secondary);
+            font-weight: 600;
+        }
+
+        .log-info { color: #2196f3; }
+        .log-success { color: var(--success); }
+        .log-error { color: var(--danger); }
+        .log-warning { color: #ff9800; }
+
+        .empty {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-secondary);
+        }
+
+        .empty i {
+            font-size: 36px;
+            margin-bottom: 10px;
+            opacity: 0.3;
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .main {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .stats {
+                grid-template-columns: 1fr 1fr;
+            }
+            
+            .header-top {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            
+            .date-filter {
+                flex-direction: column;
+                width: 100%;
+            }
+            
+            .date-filter input {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body class="light-orangered">
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <div class="header-top">
+                <div class="header-title">
+                    <h1><i class="fas fa-chart-line"></i> Trading Dashboard</h1>
+                </div>
+                <div class="theme-controls">
+                    <button class="theme-btn active" onclick="setMode('light')">
+                        <i class="fas fa-sun"></i> Light
+                    </button>
+                    <button class="theme-btn" onclick="setMode('dark')">
+                        <i class="fas fa-moon"></i> Dark
+                    </button>
+                    <div class="color-palette">
+                        <div class="color-btn color-orangered active" onclick="setColor('orangered')" title="Orange Red"></div>
+                        <div class="color-btn color-green" onclick="setColor('green')" title="Green"></div>
+                        <div class="color-btn color-dark" onclick="setColor('dark')" title="Dark"></div>
+                        <div class="color-btn color-white" onclick="setColor('white')" title="Blue"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="header-controls">
+                <div class="date-filter">
+                    <i class="fas fa-calendar"></i>
+                    <input type="date" id="startDate">
+                    <span>to</span>
+                    <input type="date" id="endDate">
+                    <button class="btn btn-primary" onclick="filterByDate()">
+                        <i class="fas fa-filter"></i> Filter
+                    </button>
+                    <button class="btn btn-primary" onclick="resetFilter()" style="background: #6c757d;">
+                        <i class="fas fa-redo"></i> Reset
+                    </button>
+                </div>
+                <div class="status-badge" id="statusBadge">
+                    <span class="pulse"></span>
+                    STOPPED
+                </div>
+            </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-top">
+                    <div class="stat-label">Balance</div>
+                    <div class="stat-icon"><i class="fas fa-wallet"></i></div>
+                </div>
+                <div class="stat-value" id="balance">$0.00</div>
+            </div>
+            <div class="stat">
+                <div class="stat-top">
+                    <div class="stat-label">Session P&L</div>
+                    <div class="stat-icon"><i class="fas fa-chart-line"></i></div>
+                </div>
+                <div class="stat-value" id="sessionPnl">$0.00</div>
+            </div>
+            <div class="stat">
+                <div class="stat-top">
+                    <div class="stat-label">Total Trades</div>
+                    <div class="stat-icon"><i class="fas fa-exchange-alt"></i></div>
+                </div>
+                <div class="stat-value" id="totalTrades">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-top">
+                    <div class="stat-label">Win Rate</div>
+                    <div class="stat-icon"><i class="fas fa-percentage"></i></div>
+                </div>
+                <div class="stat-value" id="winRate">0%</div>
+            </div>
+            <div class="stat">
+                <div class="stat-top">
+                    <div class="stat-label">Wins</div>
+                    <div class="stat-icon"><i class="fas fa-check-circle"></i></div>
+                </div>
+                <div class="stat-value positive" id="wins">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-top">
+                    <div class="stat-label">Losses</div>
+                    <div class="stat-icon"><i class="fas fa-times-circle"></i></div>
+                </div>
+                <div class="stat-value negative" id="losses">0</div>
+            </div>
+        </div>
+
+        <!-- Main -->
+        <div class="main">
+            <!-- Left -->
+            <div>
+                <!-- Chart -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <i class="fas fa-chart-area"></i>
+                            Performance
+                        </div>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="chart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Trades -->
+                <div class="card" style="margin-top: 20px;">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <i class="fas fa-history"></i>
+                            Recent Trades
+                        </div>
+                    </div>
+                    <div style="overflow-x: auto;">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Symbol</th>
+                                    <th>Ticks</th>
+                                    <th>P&L</th>
+                                    <th>Result</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tradesTable">
+                                <tr><td colspan="5" class="empty">
+                                    <i class="fas fa-inbox"></i><br>No trades yet
+                                </td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right -->
+            <div>
+                <!-- Active Trade -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <i class="fas fa-bolt"></i>
+                            Active Trade
+                        </div>
+                    </div>
+                    <div id="activeTrade">
+                        <div class="empty">
+                            <i class="fas fa-pause-circle"></i><br>
+                            No active trade
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Markets -->
+                <div class="card" style="margin-top: 20px;">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <i class="fas fa-chart-bar"></i>
+                            Markets
+                        </div>
+                    </div>
+                    <div class="market-grid" id="markets">
+                        <div class="empty">
+                            <i class="fas fa-spinner fa-spin"></i><br>
+                            Loading...
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Logs -->
+                <div class="card" style="margin-top: 20px;">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <i class="fas fa-terminal"></i>
+                            Activity
+                        </div>
+                    </div>
+                    <div class="logs" id="logs">
+                        <div class="empty">
+                            <i class="fas fa-file-alt"></i><br>
+                            No logs yet
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // Theme Management
+        let currentMode = 'light';
+        let currentColor = 'orangered';
+        let chart = null;
+
+        function setMode(mode) {
+            currentMode = mode;
+            updateTheme();
+            document.querySelectorAll('.theme-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.closest('.theme-btn').classList.add('active');
+            localStorage.setItem('theme-mode', mode);
+        }
+
+        function setColor(color) {
+            currentColor = color;
+            updateTheme();
+            document.querySelectorAll('.color-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+            localStorage.setItem('theme-color', color);
+        }
+
+        function updateTheme() {
+            document.body.className = `${currentMode}-${currentColor}`;
+            if (chart) {
+                updateChartColors();
+            }
+        }
+
+        // Load saved theme
+        const savedMode = localStorage.getItem('theme-mode') || 'light';
+        const savedColor = localStorage.getItem('theme-color') || 'orangered';
+        currentMode = savedMode;
+        currentColor = savedColor;
+        document.body.className = `${currentMode}-${currentColor}`;
+
+        // Update active buttons on load
+        window.addEventListener('DOMContentLoaded', () => {
+            document.querySelectorAll('.theme-btn').forEach(btn => {
+                if (btn.textContent.toLowerCase().includes(savedMode)) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+            document.querySelectorAll('.color-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.querySelector(`.color-${savedColor}`).classList.add('active');
+        });
+
+        // Date Setup
+        const today = new Date();
+        const weekAgo = new Date(today);
+        weekAgo.setDate(today.getDate() - 7);
+        
+        document.getElementById('startDate').valueAsDate = weekAgo;
+        document.getElementById('endDate').valueAsDate = today;
+
+        // Chart
+        const ctx = document.getElementById('chart').getContext('2d');
+        chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'P&L',
+                    data: [],
+                    borderColor: getComputedStyle(document.body).getPropertyValue('--accent'),
+                    backgroundColor: getComputedStyle(document.body).getPropertyValue('--accent') + '20',
+                    tension: 0.3,
+                    fill: true,
+                    borderWidth: 2,
+                    pointRadius: 3,
+                    pointHoverRadius: 5
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                        padding: 10,
+                        cornerRadius: 6
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: {
+                            color: getComputedStyle(document.body).getPropertyValue('--border')
+                        },
+                        ticks: {
+                            color: getComputedStyle(document.body).getPropertyValue('--text-secondary'),
+                            callback: value => '$' + value.toFixed(2)
+                        }
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: {
+                            color: getComputedStyle(document.body).getPropertyValue('--text-secondary')
+                        }
+                    }
+                }
+            }
+        });
+
+        function updateChartColors() {
+            const accent = getComputedStyle(document.body).getPropertyValue('--accent');
+            const border = getComputedStyle(document.body).getPropertyValue('--border');
+            const textSecondary = getComputedStyle(document.body).getPropertyValue('--text-secondary');
+            
+            chart.data.datasets[0].borderColor = accent;
+            chart.data.datasets[0].backgroundColor = accent + '20';
+            chart.options.scales.y.grid.color = border;
+            chart.options.scales.y.ticks.color = textSecondary;
+            chart.options.scales.x.ticks.color = textSecondary;
+            chart.update('none');
+        }
+
+        // Filter
+        function filterByDate() {
+            const start = document.getElementById('startDate').value;
+            const end = document.getElementById('endDate').value;
+            
+            if (!start || !end) {
+                alert('Select both dates');
+                return;
+            }
+            
+            console.log('Filtering from', start, 'to', end);
+            
+            fetch(`/api/data?start=${start}&end=${end}`)
+                .then(r => {
+                    console.log('Filter response:', r.status);
+                    return r.json();
+                })
+                .then(data => {
+                    console.log('Filtered data:', data);
+                    render(data);
+                })
+                .catch(e => {
+                    console.error('Filter error:', e);
+                    alert('Error filtering data: ' + e.message);
+                });
+        }
+
+        function resetFilter() {
+            console.log('Resetting filter');
+            update();
+        }
+
+        // Update
+        function update() {
+            fetch('/api/data')
+                .then(r => r.json())
+                .then(data => render(data))
+                .catch(e => console.error('Error:', e));
+        }
+
+        function render(data) {
+            // Status
+            const badge = document.getElementById('statusBadge');
+            badge.innerHTML = `<span class="pulse"></span>${data.status.toUpperCase()}`;
+            badge.className = 'status-badge status-' + data.status;
+
+            // Stats
+            document.getElementById('balance').textContent = '$' + data.balance.toFixed(2);
+            
+            const pnl = document.getElementById('sessionPnl');
+            pnl.textContent = (data.session_pnl >= 0 ? '+$' : '-$') + Math.abs(data.session_pnl).toFixed(2);
+            pnl.className = 'stat-value ' + (data.session_pnl >= 0 ? 'positive' : 'negative');
+            
+            document.getElementById('totalTrades').textContent = data.total_trades;
+            document.getElementById('winRate').textContent = data.win_rate.toFixed(1) + '%';
+            document.getElementById('wins').textContent = data.wins;
+            document.getElementById('losses').textContent = data.losses;
+
+            // Chart
+            if (data.performance_history && data.performance_history.length > 0) {
+                const history = data.performance_history.slice(-50);
+                chart.data.labels = history.map((h, i) => {
+                    const d = new Date(h.timestamp);
+                    return d.toLocaleTimeString();
+                });
+                chart.data.datasets[0].data = history.map(h => h.pnl);
+                chart.update('none');
+            }
+
+            // Active Trade
+            const activeDiv = document.getElementById('activeTrade');
+            if (data.active_trade) {
+                const t = data.active_trade;
+                activeDiv.innerHTML = `
+                    <div class="active-trade">
+                        <div class="active-trade-header">
+                            <i class="fas fa-circle" style="animation: pulse 2s infinite;"></i>
+                            ${t.symbol} LIVE
+                        </div>
+                        <div class="trade-grid">
+                            <div class="trade-item">
+                                <div class="trade-label">Score</div>
+                                <div class="trade-value">${t.score.toFixed(1)}</div>
+                            </div>
+                            <div class="trade-item">
+                                <div class="trade-label">Stake</div>
+                                <div class="trade-value">$${t.stake.toFixed(2)}</div>
+                            </div>
+                            <div class="trade-item">
+                                <div class="trade-label">Volatility</div>
+                                <div class="trade-value">${(t.metrics.vol_short * 1000).toFixed(3)}</div>
+                            </div>
+                            <div class="trade-item">
+                                <div class="trade-label">Consistency</div>
+                                <div class="trade-value">${(t.metrics.consistency * 100).toFixed(0)}%</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } else {
+                activeDiv.innerHTML = '<div class="empty"><i class="fas fa-pause-circle"></i><br>No active trade</div>';
+            }
+
+            // Markets
+            const marketsDiv = document.getElementById('markets');
+            if (data.market_conditions && Object.keys(data.market_conditions).length > 0) {
+                marketsDiv.innerHTML = Object.entries(data.market_conditions).map(([sym, info]) => {
+                    let cls = 'score-poor';
+                    if (info.score >= 70) cls = 'score-excellent';
+                    else if (info.score >= 60) cls = 'score-good';
+                    else if (info.score >= 50) cls = 'score-fair';
+                    
+                    return `
+                        <div class="market">
+                            <span class="market-name">${sym}</span>
+                            <span class="market-score ${cls}">${info.score.toFixed(1)}</span>
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                marketsDiv.innerHTML = '<div class="empty"><i class="fas fa-chart-bar"></i><br>No data</div>';
+            }
+
+            // Trades
+            const tradesTable = document.getElementById('tradesTable');
+            if (data.recent_trades && data.recent_trades.length > 0) {
+                tradesTable.innerHTML = data.recent_trades.slice(0, 15).map(t => {
+                    const d = new Date(t.timestamp);
+                    const time = d.toLocaleTimeString();
+                    const cls = t.result === 'win' ? 'trade-win' : 'trade-loss';
+                    const icon = t.result === 'win' ? 'check-circle' : 'times-circle';
+                    return `
+                        <tr>
+                            <td>${time}</td>
+                            <td><strong>${t.symbol}</strong></td>
+                            <td>${t.ticks}</td>
+                            <td class="${cls}">${(t.profit >= 0 ? '+$' : '-$')}${Math.abs(t.profit).toFixed(2)}</td>
+                            <td class="${cls}"><i class="fas fa-${icon}"></i> ${t.result.toUpperCase()}</td>
+                        </tr>
+                    `;
+                }).join('');
+            } else {
+                tradesTable.innerHTML = '<tr><td colspan="5" class="empty"><i class="fas fa-inbox"></i><br>No trades</td></tr>';
+            }
+
+            // Logs
+            const logsDiv = document.getElementById('logs');
+            if (data.logs && data.logs.length > 0) {
+                logsDiv.innerHTML = data.logs.slice(0, 30).map(l => {
+                    const d = new Date(l.timestamp);
+                    const time = d.toLocaleTimeString();
+                    return `
+                        <div class="log">
+                            <span class="log-time">[${time}]</span>
+                            <span class="log-${l.level}">${l.message}</span>
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                logsDiv.innerHTML = '<div class="empty"><i class="fas fa-file-alt"></i><br>No logs</div>';
+            }
+        }
+
+        // Start
+        update();
+        setInterval(update, 2000);
+    </script>
+</body>
+</html>

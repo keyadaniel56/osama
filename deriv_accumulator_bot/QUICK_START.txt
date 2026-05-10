@@ -1,0 +1,37 @@
+===============================================
+  QUICK START GUIDE
+===============================================
+
+YOU ARE CURRENTLY RUNNING: bot.py (Single Market)
+This only watches R_100
+
+TO RUN MULTI-MARKET BOT (watches 5 markets):
+
+Option 1 - Direct:
+    python multi_market_bot.py
+
+Option 2 - Using launcher:
+    ./run_multi_market.sh
+
+===============================================
+DIFFERENCE:
+
+bot.py:
+  - Watches: R_100 only
+  - If R_100 is volatile, you wait
+  - Fewer trading opportunities
+
+multi_market_bot.py:
+  - Watches: R_10, R_25, R_50, R_75, R_100
+  - If R_100 is volatile, trades R_25 instead
+  - 5x more trading opportunities
+  - Trades whichever market is best
+
+===============================================
+RECOMMENDATION:
+
+Stop bot.py (Ctrl+C)
+Run: python multi_market_bot.py
+
+Same .env configuration works for both!
+===============================================
