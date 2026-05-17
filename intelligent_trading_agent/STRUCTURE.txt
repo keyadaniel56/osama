@@ -1,0 +1,25 @@
+intelligent_trading_agent/
+├── agent.py                    # Main orchestrator - integrates all subsystems
+├── config.py                   # Configuration management
+├── logger.py                   # Structured logging system
+├── deriv_client.py            # Deriv API WebSocket client
+├── market_analyzer.py         # Market state detection & analysis
+├── strategy_selector.py       # Dynamic strategy selection
+├── learning_system.py         # Continuous learning & adaptation
+├── risk_manager.py            # Risk management & position sizing
+├── demo.py                    # Comprehensive demo script
+├── requirements.txt           # Python dependencies
+├── .env.example               # Environment template
+├── README.md                  # Project documentation
+├── features/
+│   ├── __init__.py
+│   └── indicators.py          # 50+ technical indicators & feature extraction
+├── strategies/
+│   ├── __init__.py            # Base strategy class
+│   ├── higher_lower.py        # Higher/Lower strategy
+│   ├── accumulator.py         # Accumulator strategy (trend following)
+│   └── rise_fall.py           # Rise/Fall strategy (mean reversion)
+├── models/                    # Persisted models & performance data
+│   └── .gitkeep
+└── logs/                      # Trade & analysis logs
+    └── .gitkeep
