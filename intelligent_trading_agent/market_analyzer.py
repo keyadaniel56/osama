@@ -41,16 +41,29 @@ class MarketAnalyzer:
         Detect current market state with more reliable thresholds.
         Returns: TRENDING_UP, TRENDING_DOWN, RANGING, VOLATILE, CALM, or UNKNOWN
         """
-        if len(self.price_history) < 20:
+        # Require at least 50 data points for reliable state detection
+        if len(self.price_history) < 50:
             return MarketState.UNKNOWN
         
         try:
+            # Check if feature engine has enough data
+            if len(self.feature_engine.indicators.prices) < 30:
+                agent_logger.log_warning(f"Feature engine has insufficient data: {len(self.feature_engine.indicators.prices)} prices")
+                return MarketState.UNKNOWN
+            
             # Extract key metrics
             volatility = self.feature_engine.indicators.volatility(20)
             momentum = self.feature_engine.indicators.momentum(20)
             sma_20 = self.feature_engine.indicators.sma(20)
-            sma_50 = self.feature_engine.indicators.sma(50)
             current_price = self.feature_engine.indicators.current_price()
+            
+            # Only use sma_50 if we have enough data
+            sma_50 = self.feature_engine.indicators.sma(50) if len(self.price_history) >= 50 else sma_20
+            
+            # Validate we have valid data
+            if current_price == 0 or sma_20 == 0:
+                agent_logger.log_warning(f"Invalid price data: current={current_price}, sma_20={sma_20}")
+                return MarketState.UNKNOWN
             
             # Normalize momentum to 0-1 range
             momentum_abs = abs(momentum) if momentum != 0 else 0
@@ -64,13 +77,17 @@ class MarketAnalyzer:
             
             # Check for trending market (momentum + price action)
             if momentum > 1.0 and current_price > sma_20:
-                if current_price > sma_50:
+                if len(self.price_history) >= 50 and current_price > sma_50:
                     return MarketState.TRENDING_UP
+                elif len(self.price_history) < 50:
+                    return MarketState.TRENDING_UP  # Use short-term trend
                 else:
                     return MarketState.RANGING  # Mixed signals
             elif momentum < -1.0 and current_price < sma_20:
-                if current_price < sma_50:
+                if len(self.price_history) >= 50 and current_price < sma_50:
                     return MarketState.TRENDING_DOWN
+                elif len(self.price_history) < 50:
+                    return MarketState.TRENDING_DOWN  # Use short-term trend
                 else:
                     return MarketState.RANGING  # Mixed signals
             
@@ -87,6 +104,8 @@ class MarketAnalyzer:
             
         except Exception as e:
             agent_logger.log_warning(f"Error in market state detection: {e}")
+            import traceback
+            agent_logger.log_warning(f"Traceback: {traceback.format_exc()}")
             return MarketState.UNKNOWN
     
     def calculate_market_health(self) -> float:

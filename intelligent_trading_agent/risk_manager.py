@@ -6,7 +6,8 @@ from typing import Dict, Optional
 from logger import agent_logger
 from config import (
     BASE_STAKE, MAX_DAILY_LOSS, MAX_CONSEC_LOSSES, 
-    MAX_DRAWDOWN, MIN_CONFIDENCE
+    MAX_DRAWDOWN, MIN_CONFIDENCE, MIN_MARKET_HEALTH,
+    MIN_STAKE_AMOUNT
 )
 
 
@@ -20,6 +21,12 @@ class RiskManager:
         self.base_stake = BASE_STAKE
         self.current_stake = BASE_STAKE
         self.stake_multiplier = 1.0
+        
+        # Martingale settings
+        self.use_martingale = True  # Enable/disable martingale
+        self.martingale_multiplier = 2.0  # Double after loss
+        self.max_martingale_steps = 3  # Max times to double (prevents huge losses)
+        self.martingale_step = 0  # Current martingale step
         
         # Daily tracking
         self.daily_profit = 0.0
@@ -53,8 +60,8 @@ class RiskManager:
         if confidence < self.min_confidence_threshold:
             return False
         
-        # Check market health
-        if market_health < 50:
+        # Check market health (use config value)
+        if market_health < MIN_MARKET_HEALTH:
             return False
         
         # Check daily loss limit
@@ -77,32 +84,33 @@ class RiskManager:
     
     def calculate_position_size(self, confidence: float, market_volatility: float) -> float:
         """
-        Calculate position size based on confidence and volatility.
-        Returns stake amount.
+        Calculate position size with Martingale strategy.
+        
+        Martingale: Double stake after each loss to recover losses + profit.
+        Resets to base stake after a win.
         """
-        # Base position size
-        position_size = self.base_stake
+        if self.use_martingale and self.martingale_step > 0:
+            # Apply martingale: multiply base stake by 2^step
+            position_size = self.base_stake * (self.martingale_multiplier ** self.martingale_step)
+            agent_logger.log_info(
+                f"Martingale active: Step {self.martingale_step}, "
+                f"Stake: ${position_size:.2f} (Base: ${self.base_stake})"
+            )
+        else:
+            # Normal stake
+            position_size = self.base_stake
         
-        # Adjust for confidence
-        confidence_multiplier = 0.5 + (confidence * 0.5)  # 0.5 to 1.0
-        position_size *= confidence_multiplier
+        # Enforce Deriv minimum stake
+        position_size = max(position_size, MIN_STAKE_AMOUNT)
         
-        # Reduce position size in high volatility
-        volatility_multiplier = max(0.5, 1.0 - (market_volatility * 0.5))
-        position_size *= volatility_multiplier
-        
-        # Apply overall stake multiplier
-        position_size *= self.stake_multiplier
-        
-        # Cap position size
-        position_size = min(position_size, self.base_stake * 2)
-        position_size = max(position_size, self.base_stake * 0.25)
+        # Round to 2 decimal places
+        position_size = round(position_size, 2)
         
         self.current_stake = position_size
         return position_size
     
     def record_trade_result(self, stake: float, result: bool, profit_loss: float):
-        """Record trade outcome for risk tracking."""
+        """Record trade outcome for risk tracking with Martingale."""
         self.trades_today += 1
         self.session_trades.append({
             'stake': stake,
@@ -111,11 +119,38 @@ class RiskManager:
         })
         
         if result:
-            self.daily_profit += profit_loss
+            # WIN: Reset martingale and record profit
+            self.daily_profit += abs(profit_loss)
             self.consecutive_losses = 0
+            
+            if self.martingale_step > 0:
+                agent_logger.log_info(
+                    f"✓ Martingale WIN! Recovered from {self.martingale_step} losses. "
+                    f"Resetting to base stake ${self.base_stake}"
+                )
+            
+            self.martingale_step = 0  # Reset martingale on win
+            
         else:
+            # LOSS: Increase martingale step and record loss
             self.daily_loss += abs(profit_loss)
             self.consecutive_losses += 1
+            
+            if self.use_martingale and self.martingale_step < self.max_martingale_steps:
+                self.martingale_step += 1
+                next_stake = self.base_stake * (self.martingale_multiplier ** self.martingale_step)
+                agent_logger.log_warning(
+                    f"✗ Loss #{self.consecutive_losses}. "
+                    f"Martingale step {self.martingale_step}/{self.max_martingale_steps}. "
+                    f"Next stake: ${next_stake:.2f}"
+                )
+            else:
+                if self.martingale_step >= self.max_martingale_steps:
+                    agent_logger.log_warning(
+                        f"✗ Max martingale steps reached ({self.max_martingale_steps}). "
+                        f"Resetting to base stake."
+                    )
+                    self.martingale_step = 0
         
         # Update portfolio value
         self.current_portfolio_value += profit_loss
@@ -137,19 +172,15 @@ class RiskManager:
     def adapt_risk_parameters(self, recommendations: Dict):
         """Adapt risk parameters based on learning system recommendations."""
         if recommendations.get('adjust_stake'):
-            multiplier = recommendations.get('new_stake_multiplier', 1.0)
-            self.stake_multiplier = multiplier
-            agent_logger.log_warning(f"Adjusted stake multiplier to {multiplier}")
+            # Martingale handles stake adjustments automatically
+            agent_logger.log_info("Stake adjustment handled by Martingale system")
         
         if recommendations.get('pause_trading'):
             self._pause_trading("Recommended by learning system")
         
         if recommendations.get('increase_confidence_threshold'):
-            old_threshold = self.min_confidence_threshold
-            self.min_confidence_threshold = min(0.80, old_threshold + 0.05)
-            agent_logger.log_warning(
-                f"Increased confidence threshold from {old_threshold} to {self.min_confidence_threshold}"
-            )
+            # Don't increase confidence threshold - let martingale handle risk
+            agent_logger.log_info("Confidence threshold adjustment disabled (Martingale active)")
     
     def resume_trading(self):
         """Resume trading after pause."""
@@ -179,9 +210,9 @@ class RiskManager:
             self._pause_trading("Daily loss limit reached")
             return
         
-        # Check consecutive losses
+        # Check consecutive losses (pause instead of reducing stake)
         if self.consecutive_losses >= self.max_consecutive_losses:
-            self._pause_trading("Consecutive loss limit reached")
+            self._pause_trading(f"Consecutive loss limit reached ({self.consecutive_losses})")
             return
         
         # Check drawdown
@@ -197,6 +228,7 @@ class RiskManager:
         self.trades_today = 0
         self.trading_paused = False
         self.pause_reason = None
+        self.martingale_step = 0  # Reset martingale
         agent_logger.log_info("Daily stats reset")
     
     def get_risk_metrics(self) -> Dict:
@@ -207,7 +239,9 @@ class RiskManager:
             'consecutive_losses': self.consecutive_losses,
             'trades_today': self.trades_today,
             'current_stake': self.current_stake,
-            'stake_multiplier': self.stake_multiplier,
+            'base_stake': self.base_stake,
+            'martingale_step': self.martingale_step,
+            'martingale_active': self.martingale_step > 0,
             'drawdown': f"{self._calculate_drawdown():.2f}%",
             'portfolio_value': self.current_portfolio_value,
             'trading_paused': self.trading_paused,

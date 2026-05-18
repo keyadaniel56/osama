@@ -30,7 +30,8 @@ from config import (
     BASE_STAKE, MAX_DAILY_LOSS, MAX_CONSEC_LOSSES,
     MIN_CONFIDENCE, RETRAIN_EVERY, MODELS_DIR,
     CONTRACT_DURATION, CONTRACT_DURATION_UNIT,
-    MAX_CONCURRENT_TRADES, AVAILABLE_SYMBOLS
+    MAX_CONCURRENT_TRADES, AVAILABLE_SYMBOLS,
+    TRADE_COOLDOWN_TICKS, MIN_MARKET_HEALTH
 )
 
 
@@ -84,6 +85,8 @@ class IntelligentTradingAgent:
         self.daily_loss = 0.0
         self.consecutive_losses = 0
         self.pnl_history = []  # Track PnL over time
+        self.last_trade_tick = 0  # Track when last trade was placed
+        self.trade_cooldown = TRADE_COOLDOWN_TICKS  # Minimum ticks between trades
         
         # Active trade tracking
         self.active_contracts = {}  # contract_id -> trade_info
@@ -182,6 +185,16 @@ class IntelligentTradingAgent:
                 regime = self.current_market_analyzer.get_market_regime()
                 self.market_health = regime['health']
                 
+                # Debug logging every 50 ticks
+                if self.tick_count % 50 == 0:
+                    agent_logger.log_info(
+                        f"Analysis: ticks={self.tick_count}, "
+                        f"state={self.current_market_state}, "
+                        f"health={self.market_health:.1f}, "
+                        f"strategy={self.current_strategy}, "
+                        f"confidence={confidence:.2f}"
+                    )
+                
                 # Step 5: Build market data for strategies
                 market_data = {
                     'features': self.current_market_analyzer.feature_engine.extract_features(),
@@ -194,36 +207,81 @@ class IntelligentTradingAgent:
                 strategy, confidence = self.strategy_selector.select_strategy(market_data)
                 self.current_strategy = strategy
                 
-                # Step 7: Check risk constraints
+                # Step 7: Check if market state is known (don't trade on unknown conditions)
+                if self.current_market_state == "unknown":
+                    agent_logger.log_warning(f"Skipping trade - market state is unknown (insufficient data)")
+                    time.sleep(0.05)
+                    continue
+                
+                # Step 7.5: Require more data before first trade (quality check)
+                # Don't trade immediately at tick 50 - wait for more confirmation
+                if self.tick_count < 100 and self.total_trades == 0:
+                    if self.tick_count % 50 == 0:
+                        agent_logger.log_info(f"Collecting more data before first trade ({self.tick_count}/100 ticks)")
+                    time.sleep(0.05)
+                    continue
+                
+                # Step 8: Check risk constraints
                 can_trade = self.risk_manager.should_trade(confidence, self.market_health)
                 
-                # Step 8: Check if we have room for more trades
+                # Step 9: Check if we have room for more trades
                 has_capacity = len(self.active_contracts) < self.max_concurrent_trades
                 
-                # Step 9: Calculate position size and execute if conditions met
-                if can_trade and has_capacity and strategy != 'hold':
+                # Step 10: Check trade cooldown (prevent rapid-fire trading)
+                ticks_since_last_trade = self.tick_count - self.last_trade_tick
+                cooldown_ready = ticks_since_last_trade >= self.trade_cooldown
+                
+                # Step 11: Calculate position size and execute if conditions met
+                if can_trade and has_capacity and cooldown_ready and strategy != 'hold':
                     volatility = market_data['features'].get('volatility', 0.5)
                     position_size = self.risk_manager.calculate_position_size(confidence, volatility)
                     
                     # Execute trade on current symbol
                     self._execute_trade(strategy, market_data, confidence, position_size)
+                    self.last_trade_tick = self.tick_count  # Update last trade time
+                elif self.tick_count % 100 == 0:
+                    # Log why we're not trading (every 100 ticks)
+                    reasons = []
+                    min_health = MIN_MARKET_HEALTH  # Store in local variable to avoid any scoping issues
+                    if not can_trade:
+                        reasons.append(f"can_trade=False (conf={confidence:.2f}<{self.risk_manager.min_confidence_threshold:.2f} or health={self.market_health}<{min_health})")
+                    if not has_capacity:
+                        reasons.append(f"no_capacity (active={len(self.active_contracts)}/{self.max_concurrent_trades})")
+                    if not cooldown_ready:
+                        reasons.append(f"cooldown ({ticks_since_last_trade}/{self.trade_cooldown} ticks)")
+                    if strategy == 'hold':
+                        reasons.append("strategy=hold")
+                    
+                    if reasons:
+                        agent_logger.log_info(f"Not trading: {', '.join(reasons)}")
                 
-                # Step 10: Check for model retraining
+                # Step 12: Check for stuck contracts (contracts open for too long)
+                if self.tick_count % 500 == 0 and len(self.active_contracts) > 0:
+                    for key, trade in list(self.active_contracts.items()):
+                        tick_opened = trade.get('tick_opened', self.tick_count)
+                        ticks_open = self.tick_count - tick_opened
+                        # 5-minute contract should close in ~300 ticks (at 1 tick/sec)
+                        # If open for 600+ ticks (10 minutes), it's stuck
+                        if ticks_open > 600:
+                            agent_logger.log_warning(
+                                f"⚠️ Stuck contract detected: {key} open for {ticks_open} ticks "
+                                f"(expected ~300). Removing from active list."
+                            )
+                            # Remove stuck contract
+                            del self.active_contracts[key]
+                
+                # Step 13: Check for model retraining
                 if self.tick_count % (RETRAIN_EVERY * 10) == 0:
                     if self.learning_system.should_retrain_model():
                         agent_logger.log_info("Retraining models based on performance...")
                 
-                # Step 11: Check for adaptation
+                # Step 14: Check for adaptation
                 if self.tick_count % 100 == 0:
                     recommendations = self.learning_system.get_adaptation_recommendations()
                     if any(recommendations.values()):
                         self.risk_manager.adapt_risk_parameters(recommendations)
                 
-                # Step 12: Periodic status and dashboard updates
-                if self.tick_count % 100 == 0:
-                    self._update_dashboard_state()
-                
-                # Periodic status logs
+                # Step 15: Periodic status logs
                 if self.tick_count % 500 == 0:
                     self._log_status()
                 
@@ -257,14 +315,18 @@ class IntelligentTradingAgent:
         profit = result.get('profit', 0)
         status = result.get('status', 'unknown')
         
+        agent_logger.log_info(f"📋 Contract result received: ID={contract_id}, profit=${profit:.2f}, status={status}")
+        agent_logger.log_info(f"📊 Active contracts before processing: {list(self.active_contracts.keys())}")
+        
         # Find the trade in active contracts
-        # First check if contract_id exists directly
         trade_info = None
         trade_key = None
         
+        # First check if contract_id exists directly
         if contract_id in self.active_contracts:
             trade_key = contract_id
             trade_info = self.active_contracts[contract_id]
+            agent_logger.log_info(f"✓ Found contract by ID: {contract_id}")
         else:
             # Check pending trades (those with temp keys)
             for key, info in list(self.active_contracts.items()):
@@ -275,77 +337,96 @@ class IntelligentTradingAgent:
                     # Update the key to actual contract_id
                     self.active_contracts[contract_id] = trade_info
                     del self.active_contracts[key]
+                    agent_logger.log_info(f"✓ Matched pending contract {key} to ID {contract_id}")
                     break
         
-        if trade_info:
-            is_win = profit > 0
-            
-            # Determine actual price direction for ML training
-            entry_price = trade_info.get('entry_price', 0)
-            contract_type = trade_info.get('contract_type')
-            
-            if contract_type == 'CALL':
-                actual_direction = 'UP' if is_win else 'DOWN'
-            elif contract_type == 'PUT':
-                actual_direction = 'DOWN' if is_win else 'UP'
-            else:
-                actual_direction = 'UP'
-            
-            # Train ML model with this result
-            if 'market_data' in trade_info:
-                self.ml_predictor.add_training_sample(
-                    trade_info['market_data'],
-                    actual_direction
-                )
-            
-            # Check if ML prediction was correct
-            ml_prediction = trade_info.get('ml_prediction', 'HOLD')
-            if ml_prediction != 'HOLD':
-                ml_was_correct = (ml_prediction == actual_direction)
-                self.ml_predictor.record_prediction_result(ml_was_correct)
-            
-            # Update statistics
-            if is_win:
-                self.win_count += 1
-                self.daily_profit += profit
-                self.consecutive_losses = 0
-                agent_logger.log_info(f"✓ WIN: Contract {contract_id} - Profit: ${profit:.2f} | Total: {self.win_count}W/{self.loss_count}L ({self.win_count/(self.win_count+self.loss_count)*100:.1f}%)")
-            else:
-                self.loss_count += 1
-                self.daily_loss += abs(profit)
-                self.consecutive_losses += 1
-                agent_logger.log_info(f"✗ LOSS: Contract {contract_id} - Loss: ${abs(profit):.2f} | Total: {self.win_count}W/{self.loss_count}L ({self.win_count/(self.win_count+self.loss_count)*100:.1f}%)")
-            
-            # Update trade count and PnL history
-            self.total_trades += 1
-            cumulative_pnl = self.daily_profit - self.daily_loss
-            self.pnl_history.append(cumulative_pnl)
-            
-            # Update trade info with result
-            if contract_id in self.active_contracts:
-                self.active_contracts[contract_id]['pnl'] = profit
-                self.active_contracts[contract_id]['result'] = 'win' if is_win else 'loss'
-                self.session_trades.append(self.active_contracts[contract_id])
-            
-            # Record for learning system
-            self.learning_system.record_trade({
-                'strategy': trade_info.get('strategy'),
-                'market_state': trade_info.get('market_state'),
-                'entry_price': trade_info.get('entry_price'),
-                'entry_confidence': trade_info.get('confidence'),
-                'profit': profit,
-                'win': is_win,
-                'duration': 300,  # 5 minutes in seconds
-            })
-            
-            # Remove from active contracts
-            if contract_id in self.active_contracts:
-                del self.active_contracts[contract_id]
-            
-            # Update dashboard
-            self._update_dashboard_state()
+        if not trade_info:
+            agent_logger.log_warning(
+                f"⚠️ Contract {contract_id} not found in active contracts. "
+                f"Active: {list(self.active_contracts.keys())}. "
+                f"This might be an old contract or already processed."
+            )
+            return
+        
+        # Process the result
+        is_win = profit > 0
+        
+        # Determine actual price direction for ML training
+        entry_price = trade_info.get('entry_price', 0)
+        contract_type = trade_info.get('contract_type')
+        
+        if contract_type == 'CALL':
+            actual_direction = 'UP' if is_win else 'DOWN'
+        elif contract_type == 'PUT':
+            actual_direction = 'DOWN' if is_win else 'UP'
         else:
-            agent_logger.log_info(f"Contract {contract_id} result: ${profit:.2f} ({status})")
+            actual_direction = 'UP'
+        
+        # Train ML model with this result
+        if 'market_data' in trade_info:
+            self.ml_predictor.add_training_sample(
+                trade_info['market_data'],
+                actual_direction
+            )
+        
+        # Check if ML prediction was correct
+        ml_prediction = trade_info.get('ml_prediction', 'HOLD')
+        if ml_prediction != 'HOLD':
+            ml_was_correct = (ml_prediction == actual_direction)
+            self.ml_predictor.record_prediction_result(ml_was_correct)
+        
+        # Update statistics
+        if is_win:
+            self.win_count += 1
+            self.daily_profit += profit
+            self.consecutive_losses = 0
+            agent_logger.log_info(
+                f"✓ WIN: Contract {contract_id} - Profit: ${profit:.2f} | "
+                f"Total: {self.win_count}W/{self.loss_count}L "
+                f"({self.win_count/(self.win_count+self.loss_count)*100:.1f}%)"
+            )
+        else:
+            self.loss_count += 1
+            self.daily_loss += abs(profit)
+            self.consecutive_losses += 1
+            agent_logger.log_info(
+                f"✗ LOSS: Contract {contract_id} - Loss: ${abs(profit):.2f} | "
+                f"Total: {self.win_count}W/{self.loss_count}L "
+                f"({self.win_count/(self.win_count+self.loss_count)*100:.1f}%)"
+            )
+        
+        # Record in risk manager
+        stake = trade_info.get('buy_price', 0)
+        self.risk_manager.record_trade_result(stake, is_win, profit)
+        
+        # Update trade count and PnL history
+        cumulative_pnl = self.daily_profit - self.daily_loss
+        self.pnl_history.append(cumulative_pnl)
+        
+        # Update trade info with result
+        trade_info['pnl'] = profit
+        trade_info['result'] = 'win' if is_win else 'loss'
+        trade_info['closed_tick'] = self.tick_count
+        self.session_trades.append(trade_info)
+        
+        # Record for learning system
+        self.learning_system.record_trade({
+            'strategy': trade_info.get('strategy'),
+            'market_state': trade_info.get('market_state'),
+            'entry_price': trade_info.get('entry_price'),
+            'entry_confidence': trade_info.get('confidence'),
+            'profit': profit,
+            'win': is_win,
+            'duration': 300,  # 5 minutes in seconds
+        })
+        
+        # CRITICAL: Remove from active contracts
+        if contract_id in self.active_contracts:
+            del self.active_contracts[contract_id]
+            agent_logger.log_info(f"🗑️ Removed contract {contract_id} from active list")
+        
+        agent_logger.log_info(f"📊 Active contracts after processing: {list(self.active_contracts.keys())}")
+        agent_logger.log_info(f"✅ Contract {contract_id} fully processed and closed")
     
     def _on_api_error(self, error_msg: str):
         """Callback when API error occurs."""
@@ -477,6 +558,8 @@ class IntelligentTradingAgent:
                 # Round position size to 2 decimal places for Deriv API
                 position_size_rounded = round(position_size, 2)
                 
+                agent_logger.log_info(f"🔄 Placing order: {contract_type} on {self.symbol} for ${position_size_rounded} ({duration}{duration_unit})")
+                
                 contract_id = self.client.buy_contract(
                     symbol=self.symbol,
                     contract_type=contract_type,
@@ -501,10 +584,15 @@ class IntelligentTradingAgent:
                     'buy_price': position_size_rounded,
                     'reasoning': signal.reasoning,
                     'market_data': market_data,  # Store for ML training
-                    'timestamp': datetime.now().isoformat()
+                    'timestamp': datetime.now().isoformat(),
+                    'tick_opened': self.tick_count  # Track when opened
                 }
                 
-                agent_logger.log_info(f"Trade #{self.total_trades}: {strategy} → {display_prediction} ({contract_type}) @ ${position_size_rounded:.2f} | Conf: {final_confidence:.2f} | Active: {len(self.active_contracts)}")
+                agent_logger.log_info(
+                    f"✅ Trade #{self.total_trades}: {strategy} → {display_prediction} ({contract_type}) "
+                    f"@ ${position_size_rounded:.2f} | Conf: {final_confidence:.2f} | "
+                    f"Active: {len(self.active_contracts)} | Tick: {self.tick_count}"
+                )
             else:
                 agent_logger.log_warning("Cannot execute trade - not authorized")
                 return
@@ -527,127 +615,40 @@ class IntelligentTradingAgent:
         except Exception as e:
             agent_logger.log_error(f"Trade execution failed: {e}")
     
-    def _update_dashboard_state(self):
-        """Update dashboard state file for web UI."""
-        try:
-            # Calculate current metrics
-            win_rate = 0
-            if self.total_trades > 0:
-                win_rate = self.win_count / self.total_trades
-            
-            # Calculate max drawdown
-            max_drawdown = 0
-            if self.pnl_history:
-                peak = max(0, max(self.pnl_history[:max(1, len(self.pnl_history))]))
-                current = self.pnl_history[-1] if self.pnl_history else 0
-                max_drawdown = max(0, ((peak - current) / max(peak, 1)) * 100)
-            
-            drawdown = max(0, ((max(0, max(self.pnl_history[:max(1, len(self.pnl_history))]) if self.pnl_history else 0) - (self.pnl_history[-1] if self.pnl_history else 0)) / max(1, max(0, max(self.pnl_history[:max(1, len(self.pnl_history))]) if self.pnl_history else 0))) * 100)
-            
-            state = {
-                'daily_profit': self.daily_profit,
-                'daily_loss': self.daily_loss,
-                'win_count': self.win_count,
-                'loss_count': self.loss_count,
-                'total_trades': self.total_trades,
-                'consecutive_losses': self.consecutive_losses,
-                'market_state': self.current_market_state,
-                'market_health': self.market_health,
-                'current_strategy': self.current_strategy,
-                'confidence': self.confidence,
-                'drawdown': drawdown,
-                'max_drawdown': max_drawdown,
-                'tick_count': self.tick_count,
-                'trading_paused': self.risk_manager.trading_paused,
-                'pause_reason': self.risk_manager.pause_reason,
-                'trade_direction': self.trade_direction,
-                'ensemble_confidence': self.ensemble_confidence,
-                'signals': self.current_signals,
-                'recent_trades': self._format_recent_trades(10),
-                'market_opportunities': self._format_market_opportunities(),
-                'pnl_history': self.pnl_history[-50:] if self.pnl_history else []  # Last 50
-            }
-            
-            with open('dashboard_state.json', 'w') as f:
-                json.dump(state, f, indent=2)
-        except Exception as e:
-            agent_logger.log_error(f"Failed to update dashboard state: {e}")
-    
-    def _format_recent_trades(self, limit: int):
-        """Format recent trades for dashboard."""
-        trades = []
-        for trade in self.session_trades[-limit:]:
-            trades.append({
-                'symbol': self.symbol,
-                'direction': trade.get('prediction', 'UP').lower(),
-                'result': 'win' if trade.get('pnl', 0) > 0 else 'loss',
-                'pnl': trade.get('pnl', 0),
-                'confidence': trade.get('entry_confidence', 0)
-            })
-        return trades
-    
-    def _format_market_opportunities(self):
-        """Format market opportunities for dashboard."""
-        if not self.multi_market_monitor:
-            return []
-        
-        opportunities = []
-        all_opps = self.multi_market_monitor.scan_all_markets()
-        for opp in all_opps:
-            opportunities.append({
-                'symbol': opp.symbol,
-                'score': opp.opportunity_score,
-                'confidence': opp.confidence,
-                'market_health': opp.market_health,
-                'strategy': opp.recommended_strategy,
-                'pattern_count': len(opp.confirmed_patterns)
-            })
-        
-        return sorted(opportunities, key=lambda x: x['score'], reverse=True)[:5]
     
     def _find_best_market_opportunity(self):
         """Find the best trading opportunity across all monitored markets."""
         try:
-            # Analyze each market in our portfolio
-            best_opportunity = None
-            best_score = 0
-            
+            # Build market data dict for all symbols
+            market_data_dict = {}
             for symbol in self.symbols:
                 analyzer = self.market_analyzers[symbol]
                 if len(analyzer.price_history) < 20:
                     continue
                 
-                # Get market metrics
-                market_state = analyzer.detect_market_state()
-                health = analyzer.calculate_market_health()
                 features = analyzer.feature_engine.extract_features()
-                
-                # Build market data
-                market_data = {
+                market_data_dict[symbol] = {
                     'features': features,
                     'price': features.get('price_current', 0),
                     'timestamp': datetime.now(),
                     'symbol': symbol
                 }
-                
-                # Get strategy recommendation
-                strategy, confidence = self.strategy_selector.select_strategy(market_data)
-                
-                # Calculate opportunity score
-                score = (confidence * 0.5) + (health / 100 * 0.5)
-                
-                if score > best_score and strategy != 'hold':
-                    best_score = score
-                    best_opportunity = type('Opportunity', (), {
-                        'symbol': symbol,
-                        'score': score,
-                        'confidence': confidence,
-                        'strategy': strategy,
-                        'market_state': market_state,
-                        'health': health
+            
+            # Use multi-market monitor to scan all markets
+            if market_data_dict:
+                opportunities = self.multi_market_monitor.scan_all_markets(market_data_dict)
+                if opportunities:
+                    best = opportunities[0]  # Already sorted by score
+                    return type('Opportunity', (), {
+                        'symbol': best.symbol,
+                        'score': best.score,
+                        'confidence': best.confidence,
+                        'strategy': best.strategy,
+                        'market_state': best.market_state,
+                        'health': best.health
                     })()
             
-            return best_opportunity
+            return None
         except Exception as e:
             agent_logger.log_warning(f"Error finding best market opportunity: {e}")
             return None

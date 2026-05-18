@@ -13,6 +13,7 @@ DERIV_APP_ID = os.getenv("DERIV_APP_ID", "1089")
 
 # === Trading Configuration ===
 BASE_STAKE = float(os.getenv("STAKE", "1.0"))
+MIN_STAKE_AMOUNT = 0.35  # Deriv minimum stake
 TAKE_PROFIT = float(os.getenv("TAKE_PROFIT", "10.0"))
 STOP_LOSS = float(os.getenv("STOP_LOSS", "5.0"))
 
@@ -21,7 +22,7 @@ CONTRACT_DURATION = int(os.getenv("CONTRACT_DURATION", "5"))  # Duration value
 CONTRACT_DURATION_UNIT = os.getenv("CONTRACT_DURATION_UNIT", "m")  # s=seconds, m=minutes, h=hours, t=ticks
 
 # Trade Management
-MAX_CONCURRENT_TRADES = int(os.getenv("MAX_CONCURRENT_TRADES", "1"))  # Max open trades at once
+MAX_CONCURRENT_TRADES = int(os.getenv("MAX_CONCURRENT_TRADES", "3"))  # Max open trades at once
 
 # === Risk Management ===
 MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", "10.0"))
@@ -29,10 +30,11 @@ MAX_CONSEC_LOSSES = int(os.getenv("MAX_CONSEC_LOSSES", "3"))
 MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", "20.0"))
 
 # === Agent Decision Thresholds ===
-MIN_CONFIDENCE = 0.60           # Minimum confidence to place a trade
+MIN_CONFIDENCE = 0.65           # Minimum confidence to place a trade (balanced for quality)
 HIGH_CONFIDENCE = 0.75          # High quality threshold
 ULTRA_CONFIDENCE = 0.85         # Ultra high quality threshold
-MIN_MARKET_HEALTH = 50          # Minimum market health score (0-100)
+MIN_MARKET_HEALTH = 55          # Minimum market health score (0-100)
+TRADE_COOLDOWN_TICKS = 50       # Minimum ticks between trades (reduced for more activity)
 
 # === Feature Engineering ===
 FEATURE_WINDOW = 30             # Window size for indicators
