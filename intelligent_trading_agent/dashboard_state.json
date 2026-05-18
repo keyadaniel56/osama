@@ -1,0 +1,15 @@
+{
+  "daily_profit": 0.0,
+  "daily_loss": 0.0,
+  "win_count": 0,
+  "loss_count": 0,
+  "total_trades": 3,
+  "market_state": "ranging",
+  "market_health": 75,
+  "timestamp": "2026-05-18T13:48:48.456549",
+  "trading_paused": false,
+  "pause_reason": null,
+  "consecutive_losses": 0,
+  "recent_trades": [],
+  "pnl_history": []
+}

@@ -1,15 +1,15 @@
 {
-  "timestamp": "2026-05-18T13:47:06.879438",
+  "timestamp": "2026-05-18T14:21:04.705910",
   "performance": {
     "rise_fall_ranging": {
       "strategy": "rise_fall",
       "market_state": "ranging",
-      "total_trades": 6,
-      "wins": 4,
-      "losses": 2,
-      "total_profit": 1.5199999999999998,
-      "avg_profit_per_trade": 0.2533333333333333,
-      "win_rate": 0.6666666666666666
+      "total_trades": 11,
+      "wins": 6,
+      "losses": 5,
+      "total_profit": 0.47999999999999965,
+      "avg_profit_per_trade": 0.043636363636363605,
+      "win_rate": 0.5454545454545454
     }
   },
   "recent_trades": [
@@ -77,6 +77,61 @@
       "entry_confidence": 0.8,
       "profit": 0.83,
       "win": true,
+      "duration": 300
+    },
+    {
+      "timestamp": "2026-05-18T13:52:10.967429",
+      "strategy": "rise_fall",
+      "market_state": "ranging",
+      "entry_price": 417.42,
+      "exit_price": null,
+      "entry_confidence": 0.8,
+      "profit": 0.83,
+      "win": true,
+      "duration": 300
+    },
+    {
+      "timestamp": "2026-05-18T14:05:52.807947",
+      "strategy": "rise_fall",
+      "market_state": "ranging",
+      "entry_price": 414.91,
+      "exit_price": null,
+      "entry_confidence": 0.8,
+      "profit": -0.9,
+      "win": false,
+      "duration": 300
+    },
+    {
+      "timestamp": "2026-05-18T14:10:56.968424",
+      "strategy": "rise_fall",
+      "market_state": "ranging",
+      "entry_price": 414.6,
+      "exit_price": null,
+      "entry_confidence": 0.8,
+      "profit": -0.9,
+      "win": false,
+      "duration": 300
+    },
+    {
+      "timestamp": "2026-05-18T14:16:01.210375",
+      "strategy": "rise_fall",
+      "market_state": "ranging",
+      "entry_price": 413.98,
+      "exit_price": null,
+      "entry_confidence": 0.8,
+      "profit": 0.83,
+      "win": true,
+      "duration": 300
+    },
+    {
+      "timestamp": "2026-05-18T14:21:04.705871",
+      "strategy": "rise_fall",
+      "market_state": "ranging",
+      "entry_price": 412.74,
+      "exit_price": null,
+      "entry_confidence": 0.8,
+      "profit": -0.9,
+      "win": false,
       "duration": 300
     }
   ]

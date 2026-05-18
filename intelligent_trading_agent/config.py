@@ -17,8 +17,8 @@ TAKE_PROFIT = float(os.getenv("TAKE_PROFIT", "10.0"))
 STOP_LOSS = float(os.getenv("STOP_LOSS", "5.0"))
 
 # Contract Duration Settings
-CONTRACT_DURATION = int(os.getenv("CONTRACT_DURATION", "60"))  # Duration value
-CONTRACT_DURATION_UNIT = os.getenv("CONTRACT_DURATION_UNIT", "s")  # s=seconds, m=minutes, h=hours, t=ticks
+CONTRACT_DURATION = int(os.getenv("CONTRACT_DURATION", "5"))  # Duration value
+CONTRACT_DURATION_UNIT = os.getenv("CONTRACT_DURATION_UNIT", "m")  # s=seconds, m=minutes, h=hours, t=ticks
 
 # Trade Management
 MAX_CONCURRENT_TRADES = int(os.getenv("MAX_CONCURRENT_TRADES", "1"))  # Max open trades at once

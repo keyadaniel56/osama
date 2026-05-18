@@ -38,39 +38,56 @@ class MarketAnalyzer:
     
     def detect_market_state(self) -> str:
         """
-        Detect current market state.
+        Detect current market state with more reliable thresholds.
         Returns: TRENDING_UP, TRENDING_DOWN, RANGING, VOLATILE, CALM, or UNKNOWN
         """
         if len(self.price_history) < 20:
             return MarketState.UNKNOWN
         
-        # Extract key metrics
-        volatility = self.feature_engine.indicators.volatility(20)
-        momentum = self.feature_engine.indicators.momentum(20)
-        sma_20 = self.feature_engine.indicators.sma(20)
-        sma_50 = self.feature_engine.indicators.sma(50)
-        current_price = self.feature_engine.indicators.current_price()
-        
-        # Check for trending market
-        if abs(momentum) > 2.0 and volatility < 0.6:
-            if momentum > 0 and current_price > sma_50:
-                return MarketState.TRENDING_UP
-            elif momentum < 0 and current_price < sma_50:
-                return MarketState.TRENDING_DOWN
-        
-        # Check for ranging market (low volatility, low momentum)
-        if volatility < 0.3 and abs(momentum) < 1.0:
+        try:
+            # Extract key metrics
+            volatility = self.feature_engine.indicators.volatility(20)
+            momentum = self.feature_engine.indicators.momentum(20)
+            sma_20 = self.feature_engine.indicators.sma(20)
+            sma_50 = self.feature_engine.indicators.sma(50)
+            current_price = self.feature_engine.indicators.current_price()
+            
+            # Normalize momentum to 0-1 range
+            momentum_abs = abs(momentum) if momentum != 0 else 0
+            volatility_norm = volatility if volatility >= 0 else 0
+            
+            # IMPROVED THRESHOLDS:
+            
+            # Check for volatile market FIRST (highest priority)
+            if volatility_norm > 0.5:
+                return MarketState.VOLATILE
+            
+            # Check for trending market (momentum + price action)
+            if momentum > 1.0 and current_price > sma_20:
+                if current_price > sma_50:
+                    return MarketState.TRENDING_UP
+                else:
+                    return MarketState.RANGING  # Mixed signals
+            elif momentum < -1.0 and current_price < sma_20:
+                if current_price < sma_50:
+                    return MarketState.TRENDING_DOWN
+                else:
+                    return MarketState.RANGING  # Mixed signals
+            
+            # Check for ranging market (low momentum, moderate volatility)
+            if volatility_norm < 0.4 and momentum_abs < 1.0:
+                return MarketState.RANGING
+            
+            # Check for calm market (very low volatility)
+            if volatility_norm < 0.2:
+                return MarketState.CALM
+            
+            # Default to ranging for unclear signals
             return MarketState.RANGING
-        
-        # Check for volatile market
-        if volatility > 0.6:
-            return MarketState.VOLATILE
-        
-        # Check for calm market (low volatility)
-        if volatility < 0.3:
-            return MarketState.CALM
-        
-        return MarketState.UNKNOWN
+            
+        except Exception as e:
+            agent_logger.log_warning(f"Error in market state detection: {e}")
+            return MarketState.UNKNOWN
     
     def calculate_market_health(self) -> float:
         """

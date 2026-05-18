@@ -46,10 +46,15 @@ class IntelligentTradingAgent:
     def __init__(self):
         """Initialize the trading agent with all subsystems."""
         self.agent_id = f"agent_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        self.symbol = DEFAULT_SYMBOL
+        self.symbols = AVAILABLE_SYMBOLS  # Track all symbols
+        self.symbol = DEFAULT_SYMBOL  # Current trading symbol
+        self.symbol_index = 0  # Index for cycling through symbols
+        
+        # Create analyzers for each symbol
+        self.market_analyzers = {symbol: MarketAnalyzer(window=100) for symbol in self.symbols}
+        self.current_market_analyzer = self.market_analyzers[self.symbol]
         
         # Initialize subsystems
-        self.market_analyzer = MarketAnalyzer(window=100)
         self.strategy_selector = StrategySelector(BASE_STAKE)
         self.learning_system = LearningSystem()
         self.risk_manager = RiskManager()
@@ -147,68 +152,82 @@ class IntelligentTradingAgent:
             raise
     
     def _trading_loop(self):
-        """Main trading loop with integrated subsystems."""
+        """Main trading loop with integrated subsystems - multi-market enabled."""
         agent_logger.log_info("Entering main trading loop...")
         
         while self.running:
             try:
-                # Step 1: Get market data
+                # Step 1: Get market data for current symbol
                 price = self._get_price()
                 if price is None:
                     time.sleep(1)
                     continue
                 
-                # Step 2: Update all subsystems with price
-                self.market_analyzer.update(price, volume=1.0)
+                # Step 2: Update current symbol's analyzer
+                self.current_market_analyzer.update(price, volume=1.0)
                 self.strategy_selector.update_market_data(price, volume=1.0)
                 self.tick_count += 1
                 
-                # Step 3: Analyze market state
-                self.current_market_state = self.market_analyzer.detect_market_state()
-                regime = self.market_analyzer.get_market_regime()
+                # Step 3: Periodically switch and analyze other markets
+                if self.tick_count % 50 == 0 and self.monitoring_multiple_markets:
+                    best_opportunity = self._find_best_market_opportunity()
+                    if best_opportunity and best_opportunity.symbol != self.symbol:
+                        self.symbol = best_opportunity.symbol
+                        self.current_market_analyzer = self.market_analyzers[self.symbol]
+                        self.client.symbol = self.symbol
+                        agent_logger.log_info(f"📊 Switched to best market: {self.symbol} (score: {best_opportunity.score:.1f})")
+                
+                # Step 4: Analyze current market state
+                self.current_market_state = self.current_market_analyzer.detect_market_state()
+                regime = self.current_market_analyzer.get_market_regime()
                 self.market_health = regime['health']
                 
-                # Step 4: Build market data for strategies
+                # Step 5: Build market data for strategies
                 market_data = {
-                    'features': self.market_analyzer.feature_engine.extract_features(),
+                    'features': self.current_market_analyzer.feature_engine.extract_features(),
                     'price': price,
-                    'timestamp': datetime.now()
+                    'timestamp': datetime.now(),
+                    'symbol': self.symbol
                 }
                 
-                # Step 5: Select best strategy
+                # Step 6: Select best strategy
                 strategy, confidence = self.strategy_selector.select_strategy(market_data)
                 self.current_strategy = strategy
                 
-                # Step 6: Check risk constraints
+                # Step 7: Check risk constraints
                 can_trade = self.risk_manager.should_trade(confidence, self.market_health)
                 
-                # Step 7: Check if we have room for more trades
+                # Step 8: Check if we have room for more trades
                 has_capacity = len(self.active_contracts) < self.max_concurrent_trades
                 
-                # Step 8: Calculate position size and execute if conditions met
+                # Step 9: Calculate position size and execute if conditions met
                 if can_trade and has_capacity and strategy != 'hold':
                     volatility = market_data['features'].get('volatility', 0.5)
                     position_size = self.risk_manager.calculate_position_size(confidence, volatility)
                     
-                    # Execute trade
+                    # Execute trade on current symbol
                     self._execute_trade(strategy, market_data, confidence, position_size)
                 
-                # Step 9: Check for model retraining
+                # Step 10: Check for model retraining
                 if self.tick_count % (RETRAIN_EVERY * 10) == 0:
                     if self.learning_system.should_retrain_model():
                         agent_logger.log_info("Retraining models based on performance...")
                 
-                # Step 10: Check for adaptation
+                # Step 11: Check for adaptation
                 if self.tick_count % 100 == 0:
                     recommendations = self.learning_system.get_adaptation_recommendations()
                     if any(recommendations.values()):
                         self.risk_manager.adapt_risk_parameters(recommendations)
                 
-                # Periodic status
+                # Step 12: Periodic status and dashboard updates
+                if self.tick_count % 100 == 0:
+                    self._update_dashboard_state()
+                
+                # Periodic status logs
                 if self.tick_count % 500 == 0:
                     self._log_status()
                 
-                time.sleep(0.1)
+                time.sleep(0.05)  # Reduced sleep for faster trading
                 
             except Exception as e:
                 agent_logger.log_error(f"Error in trading loop: {e}")
@@ -586,9 +605,56 @@ class IntelligentTradingAgent:
         
         return sorted(opportunities, key=lambda x: x['score'], reverse=True)[:5]
     
+    def _find_best_market_opportunity(self):
+        """Find the best trading opportunity across all monitored markets."""
+        try:
+            # Analyze each market in our portfolio
+            best_opportunity = None
+            best_score = 0
+            
+            for symbol in self.symbols:
+                analyzer = self.market_analyzers[symbol]
+                if len(analyzer.price_history) < 20:
+                    continue
+                
+                # Get market metrics
+                market_state = analyzer.detect_market_state()
+                health = analyzer.calculate_market_health()
+                features = analyzer.feature_engine.extract_features()
+                
+                # Build market data
+                market_data = {
+                    'features': features,
+                    'price': features.get('price_current', 0),
+                    'timestamp': datetime.now(),
+                    'symbol': symbol
+                }
+                
+                # Get strategy recommendation
+                strategy, confidence = self.strategy_selector.select_strategy(market_data)
+                
+                # Calculate opportunity score
+                score = (confidence * 0.5) + (health / 100 * 0.5)
+                
+                if score > best_score and strategy != 'hold':
+                    best_score = score
+                    best_opportunity = type('Opportunity', (), {
+                        'symbol': symbol,
+                        'score': score,
+                        'confidence': confidence,
+                        'strategy': strategy,
+                        'market_state': market_state,
+                        'health': health
+                    })()
+            
+            return best_opportunity
+        except Exception as e:
+            agent_logger.log_warning(f"Error finding best market opportunity: {e}")
+            return None
+    
     def _log_status(self):
         """Log agent status."""
-        regime = self.market_analyzer.get_market_regime()
+        regime = self.current_market_analyzer.get_market_regime()
         risk_metrics = self.risk_manager.get_risk_metrics()
         performance = self.learning_system.export_learning_report()
         
