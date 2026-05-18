@@ -20,3 +20,7 @@ matplotlib==3.7.2
 
 # Logging
 python-json-logger==2.0.7
+
+# Dashboard & Web UI
+Flask==3.0.0
+Flask-CORS==4.0.0

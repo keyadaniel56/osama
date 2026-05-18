@@ -24,6 +24,7 @@ from deriv_client import DerivClient
 from ml_predictor import MLPredictor
 from multi_market_monitor import MultiMarketMonitor
 from features.pattern_recognition import ChartPatternRecognizer
+from decision_engine import DecisionEngine, RiskAdjustedDecision
 from config import (
     DERIV_API_TOKEN, DERIV_APP_ID, DEFAULT_SYMBOL,
     BASE_STAKE, MAX_DAILY_LOSS, MAX_CONSEC_LOSSES,
@@ -55,6 +56,10 @@ class IntelligentTradingAgent:
         self.ml_predictor = MLPredictor(MODELS_DIR)  # ML predictor
         self.pattern_recognizer = ChartPatternRecognizer(window=100)  # Pattern recognition
         
+        # Decision engine (combines ML + patterns + indicators)
+        self.decision_engine = DecisionEngine()
+        self.risk_adjusted_decision = RiskAdjustedDecision(self.decision_engine, self.risk_manager)
+        
         # Multi-market monitoring
         self.multi_market_monitor = MultiMarketMonitor(AVAILABLE_SYMBOLS, BASE_STAKE)
         self.monitoring_multiple_markets = len(AVAILABLE_SYMBOLS) > 1
@@ -73,6 +78,7 @@ class IntelligentTradingAgent:
         self.daily_profit = 0.0
         self.daily_loss = 0.0
         self.consecutive_losses = 0
+        self.pnl_history = []  # Track PnL over time
         
         # Active trade tracking
         self.active_contracts = {}  # contract_id -> trade_info
@@ -82,6 +88,10 @@ class IntelligentTradingAgent:
         self.current_market_state = "unknown"
         self.current_strategy = None
         self.market_health = 0.0
+        self.confidence = 0.0
+        self.trade_direction = None
+        self.ensemble_confidence = 0.0
+        self.current_signals = {}
         
         agent_logger.log_info(f"Initialized IntelligentTradingAgent: {self.agent_id}")
         agent_logger.log_info("Subsystems loaded:")
@@ -90,6 +100,7 @@ class IntelligentTradingAgent:
         agent_logger.log_info("  - Pattern Recognition (chart pattern detection)")
         agent_logger.log_info(f"  - Multi-Market Monitor ({len(AVAILABLE_SYMBOLS)} markets)")
         agent_logger.log_info("  - ML Predictor (machine learning models)")
+        agent_logger.log_info("  - Decision Engine (ensemble signals: ML + Patterns + Indicators)")
         agent_logger.log_info("  - Learning System (continuous adaptation)")
         agent_logger.log_info("  - Risk Manager (position sizing, drawdown control)")
     
@@ -286,6 +297,17 @@ class IntelligentTradingAgent:
                 self.consecutive_losses += 1
                 agent_logger.log_info(f"✗ LOSS: Contract {contract_id} - Loss: ${abs(profit):.2f} | Total: {self.win_count}W/{self.loss_count}L ({self.win_count/(self.win_count+self.loss_count)*100:.1f}%)")
             
+            # Update trade count and PnL history
+            self.total_trades += 1
+            cumulative_pnl = self.daily_profit - self.daily_loss
+            self.pnl_history.append(cumulative_pnl)
+            
+            # Update trade info with result
+            if contract_id in self.active_contracts:
+                self.active_contracts[contract_id]['pnl'] = profit
+                self.active_contracts[contract_id]['result'] = 'win' if is_win else 'loss'
+                self.session_trades.append(self.active_contracts[contract_id])
+            
             # Record for learning system
             self.learning_system.record_trade({
                 'strategy': trade_info.get('strategy'),
@@ -300,6 +322,9 @@ class IntelligentTradingAgent:
             # Remove from active contracts
             if contract_id in self.active_contracts:
                 del self.active_contracts[contract_id]
+            
+            # Update dashboard
+            self._update_dashboard_state()
         else:
             agent_logger.log_info(f"Contract {contract_id} result: ${profit:.2f} ({status})")
     
@@ -482,6 +507,84 @@ class IntelligentTradingAgent:
             
         except Exception as e:
             agent_logger.log_error(f"Trade execution failed: {e}")
+    
+    def _update_dashboard_state(self):
+        """Update dashboard state file for web UI."""
+        try:
+            # Calculate current metrics
+            win_rate = 0
+            if self.total_trades > 0:
+                win_rate = self.win_count / self.total_trades
+            
+            # Calculate max drawdown
+            max_drawdown = 0
+            if self.pnl_history:
+                peak = max(0, max(self.pnl_history[:max(1, len(self.pnl_history))]))
+                current = self.pnl_history[-1] if self.pnl_history else 0
+                max_drawdown = max(0, ((peak - current) / max(peak, 1)) * 100)
+            
+            drawdown = max(0, ((max(0, max(self.pnl_history[:max(1, len(self.pnl_history))]) if self.pnl_history else 0) - (self.pnl_history[-1] if self.pnl_history else 0)) / max(1, max(0, max(self.pnl_history[:max(1, len(self.pnl_history))]) if self.pnl_history else 0))) * 100)
+            
+            state = {
+                'daily_profit': self.daily_profit,
+                'daily_loss': self.daily_loss,
+                'win_count': self.win_count,
+                'loss_count': self.loss_count,
+                'total_trades': self.total_trades,
+                'consecutive_losses': self.consecutive_losses,
+                'market_state': self.current_market_state,
+                'market_health': self.market_health,
+                'current_strategy': self.current_strategy,
+                'confidence': self.confidence,
+                'drawdown': drawdown,
+                'max_drawdown': max_drawdown,
+                'tick_count': self.tick_count,
+                'trading_paused': self.risk_manager.trading_paused,
+                'pause_reason': self.risk_manager.pause_reason,
+                'trade_direction': self.trade_direction,
+                'ensemble_confidence': self.ensemble_confidence,
+                'signals': self.current_signals,
+                'recent_trades': self._format_recent_trades(10),
+                'market_opportunities': self._format_market_opportunities(),
+                'pnl_history': self.pnl_history[-50:] if self.pnl_history else []  # Last 50
+            }
+            
+            with open('dashboard_state.json', 'w') as f:
+                json.dump(state, f, indent=2)
+        except Exception as e:
+            agent_logger.log_error(f"Failed to update dashboard state: {e}")
+    
+    def _format_recent_trades(self, limit: int):
+        """Format recent trades for dashboard."""
+        trades = []
+        for trade in self.session_trades[-limit:]:
+            trades.append({
+                'symbol': self.symbol,
+                'direction': trade.get('prediction', 'UP').lower(),
+                'result': 'win' if trade.get('pnl', 0) > 0 else 'loss',
+                'pnl': trade.get('pnl', 0),
+                'confidence': trade.get('entry_confidence', 0)
+            })
+        return trades
+    
+    def _format_market_opportunities(self):
+        """Format market opportunities for dashboard."""
+        if not self.multi_market_monitor:
+            return []
+        
+        opportunities = []
+        all_opps = self.multi_market_monitor.scan_all_markets()
+        for opp in all_opps:
+            opportunities.append({
+                'symbol': opp.symbol,
+                'score': opp.opportunity_score,
+                'confidence': opp.confidence,
+                'market_health': opp.market_health,
+                'strategy': opp.recommended_strategy,
+                'pattern_count': len(opp.confirmed_patterns)
+            })
+        
+        return sorted(opportunities, key=lambda x: x['score'], reverse=True)[:5]
     
     def _log_status(self):
         """Log agent status."""

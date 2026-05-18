@@ -1,0 +1,20 @@
+{
+  "agent_id": "agent_20260518_131303",
+  "total_trades": 1,
+  "win_count": 0,
+  "loss_count": 0,
+  "daily_profit": 0.0,
+  "trades": [
+    {
+      "strategy": "rise_fall",
+      "contract_type": "PUT",
+      "prediction": "FALL",
+      "market_state": "ranging",
+      "entry_price": 417.02,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "reasoning": "Price at upper BB (pos=1.0), RSI=100.0 - expecting mean reversion DOWN + low volatility (favorable)",
+      "timestamp": "2026-05-18T13:13:08.811088"
+    }
+  ]
+}
