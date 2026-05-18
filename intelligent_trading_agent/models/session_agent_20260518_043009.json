@@ -1,0 +1,20 @@
+{
+  "agent_id": "agent_20260518_043009",
+  "total_trades": 1,
+  "win_count": 0,
+  "loss_count": 0,
+  "daily_profit": 0.0,
+  "trades": [
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "prediction": "RISE",
+      "market_state": "ranging",
+      "entry_price": 409.82,
+      "entry_confidence": 0.8,
+      "position_size": 0.89,
+      "reasoning": "Price at lower BB (pos=0.2), RSI=0.0 - expecting mean reversion UP + low volatility (favorable)",
+      "timestamp": "2026-05-18T04:30:16.532940"
+    }
+  ]
+}

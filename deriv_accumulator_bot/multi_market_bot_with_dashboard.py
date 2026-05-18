@@ -209,7 +209,7 @@ class MultiMarketBotWithDashboard:
         if self._stopped:
             return
         
-        MIN_ENTRY_SCORE = 70.0  # Ultra-strict - only excellent conditions
+        MIN_ENTRY_SCORE = 80.0  # Ultra-strict - only excellent conditions (raised after knockout analysis)
             
         best_symbol = None
         best_score = 0.0

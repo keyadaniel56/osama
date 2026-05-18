@@ -82,8 +82,8 @@ class VolatilityAnalyzer:
         # LAYER 1: Advanced knockout probability prediction
         knockout_prob, analysis = self.advanced_analyzer.predict_knockout_probability(growth_rate)
         
-        # ABSOLUTE REJECTION if knockout probability > 15%
-        if knockout_prob > 0.15:
+        # ABSOLUTE REJECTION if knockout probability > 10% (tightened after knockout analysis)
+        if knockout_prob > 0.10:
             # Check if we have detailed risk breakdown
             if 'volatility_risk' in analysis:
                 # Find highest risk factor
@@ -102,18 +102,18 @@ class VolatilityAnalyzer:
                 reason = analysis.get('reason', 'unknown')
                 return False, f"knockout risk {knockout_prob*100:.1f}% ({reason})"
 
-        # LAYER 2: Traditional volatility filters (BALANCED)
-        if metrics["vol_short"] > 0.00020:
+        # LAYER 2: Traditional volatility filters (TIGHTENED)
+        if metrics["vol_short"] > 0.00015:  # Reduced from 0.00020
             return False, f"vol too high={metrics['vol_short']:.5f}"
 
-        if metrics["vol_medium"] > 0.00025:
+        if metrics["vol_medium"] > 0.00020:  # Reduced from 0.00025
             return False, f"vol_medium too high={metrics['vol_medium']:.5f}"
 
-        # LAYER 3: Consistency and trending (BALANCED)
-        if metrics["consistency"] < 0.65:
+        # LAYER 3: Consistency and trending (TIGHTENED)
+        if metrics["consistency"] < 0.70:  # Raised from 0.65
             return False, f"too choppy (consistency={metrics['consistency']:.3f})"
 
-        if metrics["hurst"] < 0.55:
+        if metrics["hurst"] < 0.60:  # Raised from 0.55
             return False, f"not trending (hurst={metrics['hurst']:.3f})"
 
         # LAYER 4: Predictability

@@ -16,6 +16,13 @@ BASE_STAKE = float(os.getenv("STAKE", "1.0"))
 TAKE_PROFIT = float(os.getenv("TAKE_PROFIT", "10.0"))
 STOP_LOSS = float(os.getenv("STOP_LOSS", "5.0"))
 
+# Contract Duration Settings
+CONTRACT_DURATION = int(os.getenv("CONTRACT_DURATION", "60"))  # Duration value
+CONTRACT_DURATION_UNIT = os.getenv("CONTRACT_DURATION_UNIT", "s")  # s=seconds, m=minutes, h=hours, t=ticks
+
+# Trade Management
+MAX_CONCURRENT_TRADES = int(os.getenv("MAX_CONCURRENT_TRADES", "1"))  # Max open trades at once
+
 # === Risk Management ===
 MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", "10.0"))
 MAX_CONSEC_LOSSES = int(os.getenv("MAX_CONSEC_LOSSES", "3"))

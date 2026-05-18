@@ -105,16 +105,25 @@ class DerivClient:
             data = json.loads(message)
             msg_type = data.get("msg_type")
             
+            # Log important messages only (not every tick)
+            if msg_type != "tick":
+                agent_logger.log_info(f"Received: {msg_type}")
+            
             if msg_type == "authorize":
                 self._handle_authorize(data)
             elif msg_type == "tick":
                 self._handle_tick(data)
             elif msg_type == "buy":
                 self._handle_buy(data)
+            elif msg_type == "proposal_open_contract":
+                self._handle_contract_update(data)
             elif msg_type == "sell":
                 self._handle_sell(data)
             elif msg_type == "error":
                 self._handle_error(data)
+            else:
+                # Log unknown message types
+                agent_logger.log_info(f"Unknown message type: {msg_type}")
                 
         except json.JSONDecodeError:
             agent_logger.log_error(f"JSON decode error: {message}")
@@ -164,16 +173,59 @@ class DerivClient:
     
     def _handle_buy(self, data: Dict):
         """Handle buy contract response."""
+        if "error" in data:
+            agent_logger.log_error(f"Buy error: {data['error']['message']}")
+            return
+            
         contract = data.get("buy", {})
         contract_id = contract.get("contract_id")
+        buy_price = contract.get("buy_price", 0)
         
         if contract_id:
             self._pending_contracts[contract_id] = {
                 'type': 'buy',
                 'time': time.time(),
+                'buy_price': buy_price,
                 'data': contract
             }
-            agent_logger.log_info(f"Contract bought: {contract_id}")
+            agent_logger.log_info(f"Contract bought: {contract_id} - ${buy_price:.2f}")
+            
+            # Subscribe to contract updates to get the result when it closes
+            self._subscribe_to_contract(contract_id)
+    
+    def _subscribe_to_contract(self, contract_id: int):
+        """Subscribe to contract updates to track when it closes."""
+        self._send({
+            "proposal_open_contract": 1,
+            "contract_id": contract_id,
+            "subscribe": 1
+        })
+    
+    def _handle_contract_update(self, data: Dict):
+        """Handle contract status updates."""
+        contract = data.get("proposal_open_contract", {})
+        contract_id = contract.get("contract_id")
+        status = contract.get("status")
+        
+        if status == "sold" or status == "won" or status == "lost":
+            sell_price = contract.get("sell_price", 0)
+            profit = contract.get("profit", 0)
+            
+            agent_logger.log_info(f"Contract {contract_id} {status} - Sell: ${sell_price:.2f}, Profit: ${profit:.2f}")
+            
+            # Trigger callback with result
+            if self.on_contract_result:
+                self.on_contract_result({
+                    'contract_id': contract_id,
+                    'result': sell_price,
+                    'profit': profit,
+                    'status': status,
+                    'timestamp': time.time()
+                })
+            
+            # Clean up
+            if contract_id in self._pending_contracts:
+                del self._pending_contracts[contract_id]
     
     def _handle_sell(self, data: Dict):
         """Handle sell contract response."""
@@ -212,20 +264,35 @@ class DerivClient:
         self.authorized = False
         agent_logger.log_warning("WebSocket closed")
     
-    def buy_contract(self, symbol: str, contract_type: str, duration: int, amount: float) -> Optional[str]:
+    def buy_contract(self, symbol: str, contract_type: str, duration: int, duration_unit: str = "m", amount: float = 1.0, currency: str = "USD") -> Optional[str]:
         """
         Buy a contract.
-        Returns: contract_id
+        
+        Args:
+            symbol: Trading symbol (e.g., "R_100")
+            contract_type: Contract type (e.g., "CALL", "PUT")
+            duration: Duration value
+            duration_unit: Duration unit - "s" (seconds), "m" (minutes), "h" (hours), "t" (ticks)
+            amount: Stake amount
+            currency: Currency code (default: "USD")
+            
+        Returns: contract_id (asynchronously via callback)
         """
         payload = {
-            "buy": 1,
-            "subscribe": 1,
-            "symbol": symbol,
-            "type": contract_type,
-            "duration": duration,
-            "amount": amount
+            "buy": "1",
+            "price": amount,
+            "parameters": {
+                "contract_type": contract_type,
+                "symbol": symbol,
+                "duration": duration,
+                "duration_unit": duration_unit,
+                "basis": "stake",
+                "amount": amount,
+                "currency": currency
+            }
         }
         self._send(payload)
+        agent_logger.log_info(f"Buy request sent: {contract_type} on {symbol} for ${amount} {currency} - {duration}{duration_unit}")
         # Returns contract_id asynchronously via callback
         return None
     

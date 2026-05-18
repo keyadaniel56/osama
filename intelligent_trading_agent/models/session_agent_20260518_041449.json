@@ -1,0 +1,945 @@
+{
+  "agent_id": "agent_20260518_041449",
+  "total_trades": 104,
+  "win_count": 0,
+  "loss_count": 0,
+  "daily_profit": 0.0,
+  "trades": [
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.49,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:54.545566"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.49,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:54.657759"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.49,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:54.772495"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.49,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:54.893494"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.49,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:55.004094"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.49,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:55.109302"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.49,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:55.215724"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.49,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:55.322643"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.49,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:55.426047"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.49,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:55.532679"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.49,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:55.641824"
+    },
+    {
+      "strategy": "higher_lower",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.49,
+      "entry_confidence": 0.65,
+      "position_size": 0.82,
+      "timestamp": "2026-05-18T04:14:55.767547"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.37,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:56.515397"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.37,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:56.628811"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.37,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:56.731798"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.37,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:56.836089"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.37,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:56.946047"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.37,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:57.061036"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.37,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:57.175066"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.37,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:57.278117"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.37,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:57.384917"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.37,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:57.493288"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.37,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:57.610105"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.37,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:14:57.719272"
+    },
+    {
+      "strategy": "higher_lower",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.37,
+      "entry_confidence": 0.65,
+      "position_size": 0.82,
+      "timestamp": "2026-05-18T04:14:57.824819"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.29,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:00.515161"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.29,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:00.621805"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.29,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:00.725065"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.29,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:00.828252"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.29,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:00.935390"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.29,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:01.041502"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.29,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:01.158014"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.29,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:01.275597"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.29,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:01.399383"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.29,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:01.526909"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.29,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:01.645189"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.29,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:01.757257"
+    },
+    {
+      "strategy": "higher_lower",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.29,
+      "entry_confidence": 0.65,
+      "position_size": 0.82,
+      "timestamp": "2026-05-18T04:15:01.865429"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.05,
+      "entry_confidence": 0.8,
+      "position_size": 0.89,
+      "timestamp": "2026-05-18T04:15:02.402316"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.05,
+      "entry_confidence": 0.8,
+      "position_size": 0.89,
+      "timestamp": "2026-05-18T04:15:02.506444"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.05,
+      "entry_confidence": 0.8,
+      "position_size": 0.89,
+      "timestamp": "2026-05-18T04:15:02.617615"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.05,
+      "entry_confidence": 0.8,
+      "position_size": 0.89,
+      "timestamp": "2026-05-18T04:15:02.760738"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.05,
+      "entry_confidence": 0.8,
+      "position_size": 0.89,
+      "timestamp": "2026-05-18T04:15:02.864478"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.05,
+      "entry_confidence": 0.8,
+      "position_size": 0.89,
+      "timestamp": "2026-05-18T04:15:02.977250"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.05,
+      "entry_confidence": 0.8,
+      "position_size": 0.89,
+      "timestamp": "2026-05-18T04:15:03.090960"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.05,
+      "entry_confidence": 0.8,
+      "position_size": 0.89,
+      "timestamp": "2026-05-18T04:15:03.199393"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.05,
+      "entry_confidence": 0.8,
+      "position_size": 0.89,
+      "timestamp": "2026-05-18T04:15:03.306505"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.05,
+      "entry_confidence": 0.8,
+      "position_size": 0.89,
+      "timestamp": "2026-05-18T04:15:03.412403"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.05,
+      "entry_confidence": 0.8,
+      "position_size": 0.89,
+      "timestamp": "2026-05-18T04:15:03.529466"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.05,
+      "entry_confidence": 0.8,
+      "position_size": 0.89,
+      "timestamp": "2026-05-18T04:15:03.635086"
+    },
+    {
+      "strategy": "higher_lower",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.05,
+      "entry_confidence": 0.65,
+      "position_size": 0.82,
+      "timestamp": "2026-05-18T04:15:03.760551"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.07,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:04.525901"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.07,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:04.639332"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.07,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:04.750346"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.07,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:04.874204"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.07,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:04.986339"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.07,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:05.091774"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.07,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:05.203604"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.07,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:05.313387"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.07,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:05.422225"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.07,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:05.538180"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.07,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:05.686586"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.07,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:05.790419"
+    },
+    {
+      "strategy": "higher_lower",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.07,
+      "entry_confidence": 0.65,
+      "position_size": 0.82,
+      "timestamp": "2026-05-18T04:15:05.894530"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.03,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:06.428138"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.03,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:06.533954"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.03,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:06.639301"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.03,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:06.743689"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.03,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:06.861854"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.03,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:06.971319"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.03,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:07.090079"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.03,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:07.207339"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.03,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:07.311535"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.03,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:07.417490"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.03,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:07.535356"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.03,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:07.640096"
+    },
+    {
+      "strategy": "higher_lower",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.03,
+      "entry_confidence": 0.65,
+      "position_size": 0.82,
+      "timestamp": "2026-05-18T04:15:07.764074"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.09,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:08.458512"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.09,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:08.571493"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.09,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:08.674679"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.09,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:08.799134"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.09,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:08.926768"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.09,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:09.031893"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.09,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:09.136773"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.09,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:09.253742"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.09,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:09.360406"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.09,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:09.469857"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.09,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:09.577926"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.09,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:09.699730"
+    },
+    {
+      "strategy": "higher_lower",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.09,
+      "entry_confidence": 0.65,
+      "position_size": 0.82,
+      "timestamp": "2026-05-18T04:15:09.810155"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.17,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:10.575954"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.17,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:10.707736"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.17,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:10.810651"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.17,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:10.926167"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.17,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:11.036911"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.17,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:11.146592"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.17,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:11.266408"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.17,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:12.321409"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.04,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:12.427362"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.04,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:12.530697"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.04,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:12.640675"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.04,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:12.750891"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.04,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:12.856945"
+    },
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "market_state": "ranging",
+      "entry_price": 408.04,
+      "entry_confidence": 0.8,
+      "position_size": 0.9,
+      "timestamp": "2026-05-18T04:15:12.968688"
+    }
+  ]
+}

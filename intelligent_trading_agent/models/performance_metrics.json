@@ -1,0 +1,39 @@
+{
+  "timestamp": "2026-05-18T07:49:36.863687",
+  "performance": {
+    "rise_fall_ranging": {
+      "strategy": "rise_fall",
+      "market_state": "ranging",
+      "total_trades": 2,
+      "wins": 2,
+      "losses": 0,
+      "total_profit": 1.66,
+      "avg_profit_per_trade": 0.83,
+      "win_rate": 1.0
+    }
+  },
+  "recent_trades": [
+    {
+      "timestamp": "2026-05-18T04:28:50.838146",
+      "strategy": "rise_fall",
+      "market_state": "ranging",
+      "entry_price": 408.86,
+      "exit_price": null,
+      "entry_confidence": 0.8,
+      "profit": 0.83,
+      "win": true,
+      "duration": 300
+    },
+    {
+      "timestamp": "2026-05-18T07:49:36.863558",
+      "strategy": "rise_fall",
+      "market_state": "ranging",
+      "entry_price": 413.11,
+      "exit_price": null,
+      "entry_confidence": 0.8,
+      "profit": 0.83,
+      "win": true,
+      "duration": 300
+    }
+  ]
+}
