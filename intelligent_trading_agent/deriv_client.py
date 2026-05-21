@@ -30,6 +30,12 @@ class DerivClient:
         self.authorized = False
         self._req_id = 1
         
+        # Reconnection settings
+        self.should_reconnect = True
+        self.reconnect_delay = 5  # seconds
+        self.max_reconnect_attempts = 10
+        self.reconnect_attempts = 0
+        
         # Callbacks
         self.on_tick: Optional[Callable] = None
         self.on_contract_result: Optional[Callable] = None
@@ -42,6 +48,14 @@ class DerivClient:
         # Tick history for analysis (per symbol)
         self.tick_history: Dict[str, List[Dict]] = {sym: [] for sym in self.symbols}
         self.max_history_size = 500
+        
+        # Tick counters (total ticks received, not limited by history size)
+        self.tick_counters: Dict[str, int] = {sym: 0 for sym in self.symbols}
+        
+        # Tick health monitoring
+        self.last_tick_time: Dict[str, float] = {sym: time.time() for sym in self.symbols}
+        self.tick_timeout = 30  # seconds - if no tick for 30s, resubscribe
+        self.subscription_ids: Dict[str, str] = {}  # symbol -> subscription_id for resubscription
     
     def connect(self):
         """Connect to Deriv WebSocket."""
@@ -76,6 +90,7 @@ class DerivClient:
     
     def disconnect(self):
         """Disconnect from Deriv."""
+        self.should_reconnect = False  # Disable auto-reconnect on manual disconnect
         if self.ws:
             self.ws.close()
             self.connected = False
@@ -88,8 +103,10 @@ class DerivClient:
                 payload["req_id"] = self._req_id
                 self._req_id += 1
             self.ws.send(json.dumps(payload))
+            return payload  # Return the payload with req_id for subscription tracking
         except Exception as e:
             agent_logger.log_error(f"Send error: {e}")
+            return None
     
     def _on_open(self, ws):
         """WebSocket opened."""
@@ -106,8 +123,14 @@ class DerivClient:
             data = json.loads(message)
             msg_type = data.get("msg_type")
             
-            # Log important messages only (not every tick)
-            if msg_type != "tick":
+            # Log ALL messages for debugging (including ticks)
+            # TODO: Remove this after debugging - it's very verbose
+            if msg_type == "tick":
+                # Log tick messages occasionally
+                symbol = data.get("tick", {}).get("symbol", "unknown")
+                if len(self.tick_history.get(symbol, [])) % 50 == 0:
+                    agent_logger.log_info(f"Received: tick ({symbol})")
+            else:
                 agent_logger.log_info(f"Received: {msg_type}")
             
             if msg_type == "authorize":
@@ -120,6 +143,9 @@ class DerivClient:
                 self._handle_contract_update(data)
             elif msg_type == "sell":
                 self._handle_sell(data)
+            elif msg_type == "forget":
+                # Confirmation that we've unsubscribed - no action needed
+                pass
             elif msg_type == "error":
                 self._handle_error(data)
             else:
@@ -145,17 +171,25 @@ class DerivClient:
     def _subscribe_ticks(self):
         """Subscribe to tick updates for all monitored symbols."""
         for symbol in self.symbols:
-            self._send({
+            response = self._send({
                 "ticks": symbol,
                 "subscribe": 1
             })
             agent_logger.log_info(f"Subscribed to ticks: {symbol}")
+            # Reset last tick time when subscribing
+            self.last_tick_time[symbol] = time.time()
     
     def _handle_tick(self, data: Dict):
         """Handle tick data."""
         try:
             tick = data.get("tick", {})
             symbol = tick.get('symbol', self.symbol)
+            
+            # Store subscription ID for potential resubscription
+            subscription_id = data.get("subscription", {}).get("id")
+            if subscription_id and symbol:
+                self.subscription_ids[symbol] = subscription_id
+            
             tick_data = {
                 'epoch': tick.get('epoch'),
                 'quote': tick.get('quote'),
@@ -163,13 +197,25 @@ class DerivClient:
                 'timestamp': time.time()
             }
             
-            # Store in history per symbol
+            # Update last tick time for health monitoring
+            self.last_tick_time[symbol] = time.time()
+            
+            # Increment tick counter (unlimited, for tracking total ticks)
+            if symbol not in self.tick_counters:
+                self.tick_counters[symbol] = 0
+            self.tick_counters[symbol] += 1
+            
+            # Store in history per symbol (limited size for analysis)
             if symbol not in self.tick_history:
                 self.tick_history[symbol] = []
             
             self.tick_history[symbol].append(tick_data)
             if len(self.tick_history[symbol]) > self.max_history_size:
                 self.tick_history[symbol].pop(0)
+            
+            # Log occasionally to verify ticks are flowing (use counter, not history length)
+            if self.tick_counters[symbol] % 100 == 0:
+                agent_logger.log_info(f"📊 Tick milestone: {symbol} has received {self.tick_counters[symbol]} total ticks (history: {len(self.tick_history[symbol])})")
             
             # Trigger callback
             if self.on_tick:
@@ -209,6 +255,14 @@ class DerivClient:
             "subscribe": 1
         })
     
+    def _unsubscribe_from_contract(self, subscription_id: str):
+        """Unsubscribe from contract updates using the subscription ID."""
+        if subscription_id:
+            self._send({
+                "forget": subscription_id
+            })
+            agent_logger.log_info(f"🔕 Unsubscribed from contract updates (subscription_id={subscription_id})")
+    
     def _handle_contract_update(self, data: Dict):
         """Handle contract status updates."""
         contract = data.get("proposal_open_contract", {})
@@ -218,6 +272,11 @@ class DerivClient:
         is_sold = contract.get("is_sold", 0)
         profit = contract.get("profit", 0)
         sell_price = contract.get("sell_price", 0)
+        
+        # Store subscription ID from response for unsubscribe
+        subscription_id = data.get("subscription", {}).get("id")
+        if subscription_id and contract_id in self._pending_contracts:
+            self._pending_contracts[contract_id]['subscription_id'] = subscription_id
         
         # Log every update so we can see when contract expires
         if contract_id:
@@ -246,6 +305,12 @@ class DerivClient:
                 f"Contract {contract_id} CLOSED — status={status}, "
                 f"sell_price=${sell_price:.2f}, profit=${profit:.2f}"
             )
+            
+            # CRITICAL: Unsubscribe from contract updates to stop receiving messages
+            pending = self._pending_contracts.get(contract_id, {})
+            subscription_id = pending.get('subscription_id') or data.get("subscription", {}).get("id")
+            if subscription_id:
+                self._unsubscribe_from_contract(subscription_id)
             
             # Fire result callback — agent uses this to update active_contracts
             if self.on_contract_result:
@@ -296,7 +361,31 @@ class DerivClient:
         """WebSocket closed."""
         self.connected = False
         self.authorized = False
-        agent_logger.log_warning("WebSocket closed")
+        
+        if close_status_code:
+            agent_logger.log_warning(f"WebSocket closed: code={close_status_code}, msg={close_msg}")
+        else:
+            agent_logger.log_warning("WebSocket closed")
+        
+        # Attempt automatic reconnection if enabled
+        if self.should_reconnect and self.reconnect_attempts < self.max_reconnect_attempts:
+            self.reconnect_attempts += 1
+            agent_logger.log_info(
+                f"🔄 Attempting reconnection {self.reconnect_attempts}/{self.max_reconnect_attempts} "
+                f"in {self.reconnect_delay} seconds..."
+            )
+            time.sleep(self.reconnect_delay)
+            
+            try:
+                self.connect()
+                self.reconnect_attempts = 0  # Reset on successful reconnection
+                agent_logger.log_info("✅ Reconnected successfully!")
+            except Exception as e:
+                agent_logger.log_error(f"❌ Reconnection attempt {self.reconnect_attempts} failed: {e}")
+                if self.reconnect_attempts >= self.max_reconnect_attempts:
+                    agent_logger.log_error("❌ Max reconnection attempts reached. Giving up.")
+                    if self.on_error:
+                        self.on_error("Max reconnection attempts reached")
     
     def buy_contract(self, symbol: str, contract_type: str, duration: int, duration_unit: str = "m", amount: float = 1.0, currency: str = "USD") -> Optional[str]:
         """
@@ -336,7 +425,61 @@ class DerivClient:
             symbol = self.symbol
         return self.tick_history.get(symbol, []).copy()
     
+    def get_tick_counter(self, symbol: str = None) -> int:
+        """Get total tick count for a symbol (not limited by history size)."""
+        if symbol is None:
+            symbol = self.symbol
+        return self.tick_counters.get(symbol, 0)
+    
     def get_pending_contracts(self) -> Dict:
         """Get pending contracts."""
         with self._lock:
             return self._pending_contracts.copy()
+    
+    def check_tick_health(self) -> Dict[str, bool]:
+        """
+        Check if ticks are flowing for all symbols.
+        Returns dict of symbol -> is_healthy (True if ticks received recently).
+        """
+        current_time = time.time()
+        health_status = {}
+        
+        for symbol in self.symbols:
+            last_tick = self.last_tick_time.get(symbol, 0)
+            time_since_tick = current_time - last_tick
+            is_healthy = time_since_tick < self.tick_timeout
+            health_status[symbol] = is_healthy
+            
+            if not is_healthy and self.connected and self.authorized:
+                agent_logger.log_warning(
+                    f"⚠️ Tick timeout for {symbol}: {time_since_tick:.1f}s since last tick "
+                    f"(threshold: {self.tick_timeout}s)"
+                )
+        
+        return health_status
+    
+    def resubscribe_to_ticks(self, symbol: str = None):
+        """
+        Resubscribe to tick stream for a symbol (or all symbols if None).
+        Use this when ticks stop flowing.
+        """
+        symbols_to_resubscribe = [symbol] if symbol else self.symbols
+        
+        for sym in symbols_to_resubscribe:
+            agent_logger.log_info(f"🔄 Resubscribing to ticks for {sym}...")
+            
+            # Unsubscribe first if we have a subscription ID
+            if sym in self.subscription_ids:
+                self._send({
+                    "forget": self.subscription_ids[sym]
+                })
+                agent_logger.log_info(f"🔕 Unsubscribed from old tick stream: {sym}")
+                del self.subscription_ids[sym]
+            
+            # Subscribe again
+            self._send({
+                "ticks": sym,
+                "subscribe": 1
+            })
+            self.last_tick_time[sym] = time.time()
+            agent_logger.log_info(f"✅ Resubscribed to ticks: {sym}")

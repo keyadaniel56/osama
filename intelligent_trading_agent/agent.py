@@ -171,29 +171,67 @@ class IntelligentTradingAgent:
         
         # Track last processed tick per symbol to avoid reprocessing
         last_processed_tick = {sym: 0 for sym in self.symbols}
+        loop_iterations = 0  # Track loop iterations for debugging
         
         while self.running:
             try:
-                # Step 1: Check if we have NEW ticks for any symbol
+                loop_iterations += 1
+                
+                # Log heartbeat every 1000 iterations to show loop is running
+                if loop_iterations % 1000 == 0:
+                    agent_logger.log_info(
+                        f"💓 Loop heartbeat: iteration {loop_iterations}, "
+                        f"tick_count={self.tick_count}, "
+                        f"active_contracts={len(self.active_contracts)}, "
+                        f"connected={self.client.connected}, "
+                        f"authorized={self.client.authorized}"
+                    )
+                
+                # Check if client is connected and authorized
+                if not self.client.connected or not self.client.authorized:
+                    if loop_iterations % 100 == 0:
+                        agent_logger.log_warning("⏸ Client not connected/authorized, waiting...")
+                    time.sleep(1)
+                    continue
+                
+                # CRITICAL: Check tick health every 100 iterations (~10 seconds)
+                # If ticks stop flowing, Deriv may have dropped the subscription
+                if loop_iterations % 100 == 0:
+                    tick_health = self.client.check_tick_health()
+                    unhealthy_symbols = [sym for sym, healthy in tick_health.items() if not healthy]
+                    
+                    if unhealthy_symbols:
+                        agent_logger.log_warning(
+                            f"⚠️ Tick stream unhealthy for: {', '.join(unhealthy_symbols)} - Resubscribing..."
+                        )
+                        for sym in unhealthy_symbols:
+                            self.client.resubscribe_to_ticks(sym)
+                
+                # Step 1: Check if we have NEW ticks for any symbol (use tick counter, not history length)
                 has_new_tick = False
                 for sym in self.symbols:
-                    tick_history = self.client.get_tick_history(sym)
-                    if tick_history and len(tick_history) > last_processed_tick[sym]:
+                    current_tick_count = self.client.get_tick_counter(sym)
+                    if current_tick_count > last_processed_tick[sym]:
                         has_new_tick = True
                         break
                 
                 # If no new ticks, wait and continue
                 if not has_new_tick:
+                    # Log heartbeat every 10 seconds to show bot is alive
+                    if self.tick_count % 100 == 0:
+                        tick_counts = {sym: self.client.get_tick_counter(sym) for sym in self.symbols}
+                        agent_logger.log_info(f"💓 Heartbeat: Waiting for ticks... Current counts: {tick_counts}")
                     time.sleep(0.1)
                     continue
                 
                 # Step 2: Process NEW ticks for ALL symbols
                 for sym in self.symbols:
-                    tick_history = self.client.get_tick_history(sym)
-                    if tick_history and len(tick_history) > last_processed_tick[sym]:
-                        # Process all new ticks since last check
-                        for i in range(last_processed_tick[sym], len(tick_history)):
-                            tick = tick_history[i]
+                    current_tick_count = self.client.get_tick_counter(sym)
+                    if current_tick_count > last_processed_tick[sym]:
+                        # Get the latest tick from history
+                        tick_history = self.client.get_tick_history(sym)
+                        if tick_history:
+                            tick = tick_history[-1]  # Get most recent tick
                             sym_price = tick.get('quote')
                             
                             if sym_price and sym in self.market_analyzers:
@@ -204,8 +242,8 @@ class IntelligentTradingAgent:
                                 if sym == self.symbol:
                                     self.latest_price = sym_price
                         
-                        # Update last processed count
-                        last_processed_tick[sym] = len(tick_history)
+                        # Update last processed count to current counter
+                        last_processed_tick[sym] = current_tick_count
                 
                 # Step 3: Get price for current trading symbol
                 price = self._get_price()
@@ -403,7 +441,7 @@ class IntelligentTradingAgent:
                     time.sleep(0.05)
                     continue
                 
-                if bb_position >= 0.98 or bb_position <= 0.02:
+                if bb_position >= 1.05 or bb_position <= -0.05:
                     if self.tick_count % 100 == 0:
                         agent_logger.log_warning(
                             f"⚠️ EXTREME BB position: {bb_position:.2f} - Price at extreme band, waiting for mean reversion"
@@ -535,12 +573,12 @@ class IntelligentTradingAgent:
                     self._execute_trade(strategy, market_data, confidence, position_size, ensemble_direction=trade_direction)
                     self.last_trade_tick = self.tick_count
                 else:
-                    # Log why we're not trading (occasionally)
-                    if self.tick_count % 100 == 0:
+                    # Log why we're not trading (more frequently for debugging)
+                    if self.tick_count % 50 == 0:  # Changed from 100 to 50 for more frequent logging
                         reasons = []
                         min_health = MIN_MARKET_HEALTH
                         if not can_trade:
-                            reasons.append(f"conf={confidence:.2f}<{self.risk_manager.min_confidence_threshold:.2f} or health={self.market_health}<{min_health}")
+                            reasons.append(f"can_trade=False (conf={confidence:.2f}, threshold={self.risk_manager.min_confidence_threshold:.2f}, health={self.market_health:.1f}, min={min_health})")
                         if not cooldown_ready:
                             reasons.append(f"cooldown ({ticks_since_last_trade}/{self.trade_cooldown} ticks)")
                         if strategy == 'hold':
@@ -548,7 +586,7 @@ class IntelligentTradingAgent:
                         if not ensemble_agrees:
                             reasons.append(f"ensemble_disagrees (direction={trade_direction}, strategy={strategy})")
                         if reasons:
-                            agent_logger.log_info(f"Not trading: {', '.join(reasons)}")
+                            agent_logger.log_info(f"❌ Not trading: {', '.join(reasons)}")
                 
                 # Step 12: Check for stuck contracts (contracts open for too long)
                 if self.tick_count % 500 == 0 and len(self.active_contracts) > 0:
@@ -799,7 +837,12 @@ class IntelligentTradingAgent:
             # Get the technical analysis signal
             signal = strategy_obj.analyze(market_data)
             
-            if signal.action != 'BUY':
+            # If ensemble direction is provided, trust it and bypass strategy action check
+            # The ensemble has already considered all signals (ML, patterns, indicators)
+            if not ensemble_direction and signal.action != 'BUY':
+                agent_logger.log_info(
+                    f"❌ Trade blocked: Strategy {strategy} returned action={signal.action} (expected BUY)"
+                )
                 return  # Strategy says don't trade
             
             # Initialize variables for logging
