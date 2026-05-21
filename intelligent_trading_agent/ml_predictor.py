@@ -1,12 +1,13 @@
 """
 Machine Learning Predictor for trading decisions.
 Uses ensemble of models to predict price direction.
+Learns from actual market movements, not trade results.
 """
 
 import numpy as np
 import pickle
 import os
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 from datetime import datetime
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.preprocessing import StandardScaler
@@ -17,12 +18,13 @@ from logger import agent_logger
 class MLPredictor:
     """
     ML-based price direction predictor.
-    Combines multiple models for robust predictions.
+    Learns from market patterns by observing actual price movements.
     """
     
-    def __init__(self, models_dir: str = "models"):
+    def __init__(self, models_dir: str = "models", contract_duration_minutes: int = 5):
         self.models_dir = models_dir
         self.scaler = StandardScaler()
+        self.contract_duration_minutes = contract_duration_minutes
         
         # Ensemble of models
         self.rf_model = RandomForestClassifier(
@@ -43,14 +45,189 @@ class MLPredictor:
         self.training_buffer = deque(maxlen=1000)
         self.min_training_samples = 50
         
+        # Market observation buffer - stores (features, future_price) pairs
+        self.observation_buffer = deque(maxlen=500)  # Increased to store more history
+        
+        # Calculate lookback based on contract duration
+        # Assuming ~1 tick per second: 5 minutes = 300 ticks
+        self.lookback_ticks = contract_duration_minutes * 60  # Predict at contract expiry
+        
+        agent_logger.log_info(f"ML Predictor: Predicting {contract_duration_minutes} minutes ahead ({self.lookback_ticks} ticks)")
+        
         # Model state
         self.is_trained = False
         self.model_accuracy = 0.5
         self.predictions_made = 0
         self.correct_predictions = 0
         
+        # Live validation tracking
+        self.live_predictions = deque(maxlen=100)  # Store recent predictions with outcomes
+        self.live_accuracy_window = 20  # Calculate accuracy over last 20 predictions
+        
+        # Auto-training settings
+        self.auto_train_interval = 50  # Train every 50 new observations (increased from 30)
+        self.observations_since_training = 0
+        self.min_training_samples = 100  # Increased from 50 to ensure better class balance
+        
         # Load existing models if available
         self._load_models()
+    
+    def observe_market(self, market_data: Dict, current_price: float):
+        """
+        Observe market conditions and store for learning.
+        This is called every tick to build training data from actual market movements.
+        
+        Args:
+            market_data: Current market features
+            current_price: Current price
+        """
+        # Enrich features with pattern and S/R data
+        enriched_data = self._enrich_features(market_data, current_price)
+        
+        # Extract features
+        features = self.prepare_features(enriched_data)
+        
+        # Store observation with current price
+        self.observation_buffer.append({
+            'features': features[0],
+            'price': current_price,
+            'timestamp': datetime.now()
+        })
+        
+        # Check if we can create a training sample
+        # We need at least lookback_ticks + 1 observations
+        if len(self.observation_buffer) > self.lookback_ticks:
+            # Get observation from lookback_ticks ago
+            past_observation = self.observation_buffer[-self.lookback_ticks - 1]
+            current_observation = self.observation_buffer[-1]
+            
+            past_price = past_observation['price']
+            current_price = current_observation['price']
+            
+            # Determine actual direction (what happened)
+            price_change = current_price - past_price
+            actual_direction = 1 if price_change > 0 else 0  # 1=UP, 0=DOWN
+            
+            # Add to training buffer
+            self.training_buffer.append((past_observation['features'], actual_direction))
+            self.observations_since_training += 1
+            
+            # Auto-train periodically
+            if self.observations_since_training >= self.auto_train_interval:
+                if len(self.training_buffer) >= self.min_training_samples:
+                    # Quick check for class diversity before attempting training
+                    y_preview = [label for _, label in self.training_buffer]
+                    up_preview = sum(y_preview)
+                    down_preview = len(y_preview) - up_preview
+                    
+                    if up_preview >= 2 and down_preview >= 2:
+                        agent_logger.log_info(
+                            f"🎓 Auto-training ML model with {len(self.training_buffer)} market observations "
+                            f"(UP={up_preview}, DOWN={down_preview})..."
+                        )
+                        self.train()
+                        self.observations_since_training = 0
+                    else:
+                        if self.observations_since_training % 100 == 0:
+                            agent_logger.log_info(
+                                f"⏳ Waiting for class diversity: {len(self.training_buffer)} samples "
+                                f"(UP={up_preview}, DOWN={down_preview}) - need at least 2 of each"
+                            )
+                        # Don't reset counter - keep accumulating until we have diversity
+                else:
+                    if self.observations_since_training % 100 == 0:
+                        agent_logger.log_info(
+                            f"⏳ Accumulating training data: {len(self.training_buffer)}/{self.min_training_samples} samples"
+                        )
+    
+    def _enrich_features(self, market_data: Dict, current_price: float) -> Dict:
+        """
+        Enrich market data with support/resistance and pattern information.
+        """
+        enriched = market_data.copy()
+        features = enriched.get('features', {})
+        
+        # Calculate support/resistance from recent price history
+        if len(self.observation_buffer) >= 20:
+            recent_prices = [obs['price'] for obs in list(self.observation_buffer)[-20:]]
+            
+            # Simple S/R: local min/max in recent history
+            support = min(recent_prices)
+            resistance = max(recent_prices)
+            price_range = resistance - support if resistance > support else 1.0
+            
+            # Distance to S/R (normalized)
+            dist_to_support = (current_price - support) / price_range if price_range > 0 else 0.5
+            dist_to_resistance = (resistance - current_price) / price_range if price_range > 0 else 0.5
+            
+            # Near S/R (within 5% of range)
+            near_support = 1.0 if dist_to_support < 0.05 else 0.0
+            near_resistance = 1.0 if dist_to_resistance < 0.05 else 0.0
+            
+            # S/R strength (how many times price touched these levels)
+            support_touches = sum(1 for p in recent_prices if abs(p - support) < price_range * 0.02)
+            resistance_touches = sum(1 for p in recent_prices if abs(p - resistance) < price_range * 0.02)
+            
+            support_strength = min(support_touches / 5.0, 1.0)  # Normalize to 0-1
+            resistance_strength = min(resistance_touches / 5.0, 1.0)
+            
+            features['distance_to_support'] = dist_to_support
+            features['distance_to_resistance'] = dist_to_resistance
+            features['support_strength'] = support_strength
+            features['resistance_strength'] = resistance_strength
+            features['near_support'] = near_support
+            features['near_resistance'] = near_resistance
+            
+            # Calculate trend features for 5-minute prediction
+            if len(recent_prices) >= 10:
+                # Trend strength: how much price moved in dominant direction
+                price_changes = [recent_prices[i] - recent_prices[i-1] for i in range(1, len(recent_prices))]
+                up_moves = sum(c for c in price_changes if c > 0)
+                down_moves = abs(sum(c for c in price_changes if c < 0))
+                total_movement = up_moves + down_moves
+                
+                if total_movement > 0:
+                    trend_strength = abs(up_moves - down_moves) / total_movement
+                    features['trend_strength'] = trend_strength
+                else:
+                    features['trend_strength'] = 0.0
+                
+                # Price velocity: average price change per tick
+                avg_change = sum(price_changes) / len(price_changes) if price_changes else 0
+                features['price_velocity'] = avg_change / (price_range if price_range > 0 else 1.0)
+                
+                # Trend consistency: what % of moves are in same direction
+                dominant_direction = 1 if up_moves > down_moves else -1
+                consistent_moves = sum(1 for c in price_changes if (c > 0 and dominant_direction > 0) or (c < 0 and dominant_direction < 0))
+                features['trend_consistency'] = consistent_moves / len(price_changes) if price_changes else 0.5
+                
+                # Recent high/low ratio
+                recent_5 = recent_prices[-5:]
+                highs = sum(1 for i in range(1, len(recent_5)) if recent_5[i] > recent_5[i-1])
+                features['recent_high_low_ratio'] = highs / 4.0 if len(recent_5) >= 2 else 0.5
+            else:
+                features['trend_strength'] = 0.0
+                features['price_velocity'] = 0.0
+                features['trend_consistency'] = 0.5
+                features['recent_high_low_ratio'] = 0.5
+        else:
+            # Not enough data yet
+            features['distance_to_support'] = 0.5
+            features['distance_to_resistance'] = 0.5
+            features['support_strength'] = 0.0
+            features['resistance_strength'] = 0.0
+            features['near_support'] = 0.0
+            features['near_resistance'] = 0.0
+        
+        # Pattern features (will be populated by agent if patterns detected)
+        features['has_bullish_pattern'] = features.get('has_bullish_pattern', 0.0)
+        features['has_bearish_pattern'] = features.get('has_bearish_pattern', 0.0)
+        features['pattern_confidence'] = features.get('pattern_confidence', 0.0)
+        features['breakout_detected'] = features.get('breakout_detected', 0.0)
+        features['breakout_direction'] = features.get('breakout_direction', 0.0)
+        
+        enriched['features'] = features
+        return enriched
     
     def prepare_features(self, market_data: Dict) -> np.ndarray:
         """
@@ -61,6 +238,7 @@ class MLPredictor:
         
         # Select key features for ML
         feature_list = [
+            # Technical indicators
             features.get('rsi', 50.0),
             features.get('macd', 0.0),
             features.get('macd_signal', 0.0),
@@ -81,6 +259,27 @@ class MLPredictor:
             features.get('price_change_1', 0.0),
             features.get('price_change_5', 0.0),
             features.get('price_change_10', 0.0),
+            
+            # Trend strength features (NEW - critical for 5-minute prediction)
+            features.get('trend_strength', 0.0),        # How strong is current trend
+            features.get('price_velocity', 0.0),        # Rate of price change
+            features.get('trend_consistency', 0.0),     # How consistent is the trend
+            features.get('recent_high_low_ratio', 0.5), # Recent highs vs lows
+            
+            # Support/Resistance features (NEW)
+            features.get('distance_to_support', 0.0),      # How far from support
+            features.get('distance_to_resistance', 0.0),   # How far from resistance
+            features.get('support_strength', 0.0),         # How strong is support
+            features.get('resistance_strength', 0.0),      # How strong is resistance
+            features.get('near_support', 0.0),             # 1 if near support, 0 otherwise
+            features.get('near_resistance', 0.0),          # 1 if near resistance, 0 otherwise
+            
+            # Pattern features (NEW)
+            features.get('has_bullish_pattern', 0.0),      # 1 if bullish pattern detected
+            features.get('has_bearish_pattern', 0.0),      # 1 if bearish pattern detected
+            features.get('pattern_confidence', 0.0),       # Confidence of detected pattern
+            features.get('breakout_detected', 0.0),        # 1 if breakout detected
+            features.get('breakout_direction', 0.0),       # 1=up, -1=down, 0=none
         ]
         
         return np.array(feature_list).reshape(1, -1)
@@ -91,7 +290,7 @@ class MLPredictor:
         
         Returns:
             (prediction, confidence)
-            prediction: 'UP' or 'DOWN'
+            prediction: 'UP' or 'DOWN' or 'HOLD'
             confidence: 0.0 to 1.0
         """
         if not self.is_trained:
@@ -127,7 +326,23 @@ class MLPredictor:
             
             self.predictions_made += 1
             
-            agent_logger.log_info(f"ML Prediction: {prediction} (confidence: {confidence:.2f})")
+            # Store prediction for validation (will be validated later)
+            current_price = market_data.get('price', 0)
+            self.live_predictions.append({
+                'prediction': prediction,
+                'confidence': confidence,
+                'price_at_prediction': current_price,
+                'timestamp': datetime.now(),
+                'validated': False
+            })
+            
+            # Only log occasionally to reduce noise
+            if self.predictions_made % 50 == 0:
+                live_acc = self._calculate_live_accuracy()
+                agent_logger.log_info(
+                    f"ML Prediction: {prediction} (confidence: {confidence:.2f}, "
+                    f"accuracy: {self.model_accuracy:.2%}, samples: {len(self.training_buffer)})"
+                )
             
             return prediction, float(confidence)
             
@@ -135,9 +350,61 @@ class MLPredictor:
             agent_logger.log_error(f"ML prediction error: {e}")
             return 'HOLD', 0.0
     
+    def validate_predictions(self, current_price: float):
+        """
+        Validate recent predictions against actual price movements.
+        Checks if prediction would have won a Rise/Fall trade.
+        """
+        for pred in self.live_predictions:
+            if not pred['validated']:
+                # Check if enough time has passed (contract duration)
+                time_diff = (datetime.now() - pred['timestamp']).total_seconds()
+                expected_duration = self.lookback_ticks  # In seconds (assuming 1 tick/sec)
+                
+                if time_diff >= expected_duration:
+                    # Compare current price with price at prediction
+                    entry_price = pred['price_at_prediction']
+                    exit_price = current_price
+                    
+                    # For Rise/Fall: Did price move in predicted direction?
+                    if pred['prediction'] == 'UP':
+                        # RISE trade wins if exit_price > entry_price
+                        was_correct = (exit_price > entry_price)
+                        profit_pips = exit_price - entry_price
+                    else:
+                        # FALL trade wins if exit_price < entry_price
+                        was_correct = (exit_price < entry_price)
+                        profit_pips = entry_price - exit_price
+                    
+                    pred['validated'] = True
+                    pred['was_correct'] = was_correct
+                    pred['profit_pips'] = profit_pips
+                    pred['exit_price'] = exit_price
+                    
+                    if was_correct:
+                        self.correct_predictions += 1
+                    
+                    # Log validation result
+                    result_emoji = "✅" if was_correct else "❌"
+                    agent_logger.log_info(
+                        f"{result_emoji} ML Validation: Predicted {pred['prediction']} @ {entry_price:.5f} → "
+                        f"Actual @ {exit_price:.5f} ({profit_pips:+.5f} pips) | "
+                        f"Live Acc: {self._calculate_live_accuracy():.1%}"
+                    )
+    
+    def _calculate_live_accuracy(self) -> float:
+        """Calculate accuracy on validated live predictions."""
+        validated = [p for p in self.live_predictions if p.get('validated', False)]
+        if len(validated) < 5:
+            return 0.0
+        
+        correct = sum(1 for p in validated if p.get('was_correct', False))
+        return correct / len(validated)
+    
     def add_training_sample(self, market_data: Dict, actual_direction: str):
         """
         Add a training sample (features + actual outcome).
+        This is kept for backward compatibility with trade-based learning.
         
         Args:
             market_data: Market features at trade entry
@@ -171,6 +438,27 @@ class MLPredictor:
             X = np.array(X_list)
             y = np.array(y_list)
             
+            # Check class balance - need at least 2 examples of each class
+            up_count = np.sum(y == 1)
+            down_count = np.sum(y == 0)
+            
+            if up_count < 2 or down_count < 2:
+                agent_logger.log_warning(
+                    f"⚠️ Insufficient class diversity for training: UP={up_count}, DOWN={down_count}. "
+                    f"Need at least 2 examples of each class. Waiting for more balanced data..."
+                )
+                return
+            
+            # Check if classes are too imbalanced (>90% one class)
+            class_ratio = min(up_count, down_count) / max(up_count, down_count)
+            if class_ratio < 0.1:
+                agent_logger.log_warning(
+                    f"⚠️ Severe class imbalance: UP={up_count} ({up_count/len(y)*100:.1f}%), "
+                    f"DOWN={down_count} ({down_count/len(y)*100:.1f}%). "
+                    f"Ratio: {class_ratio:.2f}. Waiting for more balanced data..."
+                )
+                return
+            
             # Fit scaler
             self.scaler.fit(X)
             X_scaled = self.scaler.transform(X)
@@ -186,7 +474,12 @@ class MLPredictor:
             
             self.is_trained = True
             
-            agent_logger.log_info(f"ML models trained: {len(self.training_buffer)} samples, accuracy: {self.model_accuracy:.2%}")
+            agent_logger.log_info(
+                f"✅ ML models trained: {len(self.training_buffer)} samples | "
+                f"Accuracy: {self.model_accuracy:.2%} | "
+                f"UP: {up_count} ({up_count/len(y)*100:.1f}%) | "
+                f"DOWN: {down_count} ({down_count/len(y)*100:.1f}%)"
+            )
             
             # Save models
             self._save_models()
@@ -199,9 +492,9 @@ class MLPredictor:
         if was_correct:
             self.correct_predictions += 1
         
-        if self.predictions_made > 0:
+        if self.predictions_made > 0 and self.predictions_made % 20 == 0:
             accuracy = self.correct_predictions / self.predictions_made
-            agent_logger.log_info(f"ML Accuracy: {accuracy:.1%} ({self.correct_predictions}/{self.predictions_made})")
+            agent_logger.log_info(f"ML Live Accuracy: {accuracy:.1%} ({self.correct_predictions}/{self.predictions_made})")
     
     def _save_models(self):
         """Save trained models to disk."""
@@ -230,7 +523,7 @@ class MLPredictor:
             with open(os.path.join(self.models_dir, 'ml_metadata.pkl'), 'wb') as f:
                 pickle.dump(metadata, f)
             
-            agent_logger.log_info("ML models saved")
+            agent_logger.log_info("💾 ML models saved to disk")
             
         except Exception as e:
             agent_logger.log_error(f"Error saving models: {e}")
@@ -260,20 +553,23 @@ class MLPredictor:
                     self.predictions_made = metadata.get('predictions_made', 0)
                     self.correct_predictions = metadata.get('correct_predictions', 0)
                 
-                agent_logger.log_info(f"ML models loaded - Accuracy: {self.model_accuracy:.2%}")
+                agent_logger.log_info(f"📂 ML models loaded - Accuracy: {self.model_accuracy:.2%}, Samples: {len(self.training_buffer)}")
             else:
-                agent_logger.log_info("No existing ML models found, will train from scratch")
+                agent_logger.log_info("🆕 No existing ML models found, will learn from market observations")
                 
         except Exception as e:
             agent_logger.log_error(f"Error loading models: {e}")
     
     def get_stats(self) -> Dict:
         """Get ML predictor statistics."""
+        live_acc = self._calculate_live_accuracy()
         return {
             'is_trained': self.is_trained,
             'model_accuracy': self.model_accuracy,
             'predictions_made': self.predictions_made,
             'correct_predictions': self.correct_predictions,
             'training_samples': len(self.training_buffer),
-            'live_accuracy': self.correct_predictions / self.predictions_made if self.predictions_made > 0 else 0.0
+            'observations': len(self.observation_buffer),
+            'live_accuracy': live_acc,
+            'validated_predictions': len([p for p in self.live_predictions if p.get('validated', False)])
         }

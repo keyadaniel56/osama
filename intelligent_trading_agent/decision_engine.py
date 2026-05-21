@@ -18,9 +18,9 @@ class DecisionEngine:
     """
     
     def __init__(self):
-        self.ml_weight = 0.5      # ML model confidence weight
-        self.pattern_weight = 0.3  # Pattern recognition weight
-        self.indicator_weight = 0.2 # Technical indicators weight
+        self.ml_weight = 0.6      # ML model confidence weight (increased for Rise/Fall)
+        self.pattern_weight = 0.25  # Pattern recognition weight
+        self.indicator_weight = 0.15 # Technical indicators weight
         
         # Thresholds for confidence
         self.min_ensemble_confidence = MIN_CONFIDENCE
@@ -80,11 +80,20 @@ class DecisionEngine:
         direction = self._determine_direction(signals, confidences)
         
         if direction and ensemble_confidence >= self.min_ensemble_confidence:
+            # Log detailed breakdown
+            signal_summary = []
+            for sig_type in ['ml', 'pattern', 'indicator']:
+                if sig_type in signals:
+                    sig_dir = signals[sig_type].upper()
+                    sig_conf = confidences[sig_type]
+                    signal_summary.append(f"{sig_type}={sig_dir}@{sig_conf:.2f}")
+            
             agent_logger.log_info(
                 f"Decision Engine: {direction.upper()} | "
                 f"Confidence: {ensemble_confidence:.1%} | "
                 f"Market Health: {market_health}/100 | "
-                f"State: {market_state}"
+                f"State: {market_state} | "
+                f"Signals: [{', '.join(signal_summary)}]"
             )
             return direction, ensemble_confidence
         
@@ -155,7 +164,7 @@ class DecisionEngine:
         return None
     
     def _process_indicator_signal(self, indicators: Dict, market_state: str) -> Optional[Dict]:
-        """Process technical indicators into signal."""
+        """Process technical indicators into signal with proper signal weighting."""
         if not indicators:
             return None
         
@@ -164,66 +173,73 @@ class DecisionEngine:
         momentum = indicators.get('momentum', 0)
         bb_position = indicators.get('bb_position', 0.5)  # 0=lower band, 1=upper band
         
-        signal_strength = 0.0
-        direction = None
+        # Use weighted voting system instead of signal_strength
+        up_score = 0.0
+        down_score = 0.0
         
-        # RSI signals
-        if rsi < 30:  # Oversold - potential reversal up
-            signal_strength += 0.2
+        # RSI signals (REVERSAL indicator - extremes suggest opposite direction)
+        if rsi < 30:  # Oversold - expect bounce UP
+            up_score += 0.25
+        elif rsi > 70:  # Overbought - expect reversal DOWN
+            down_score += 0.25
+        elif rsi < 40:  # Moderately oversold
+            up_score += 0.1
+        elif rsi > 60:  # Moderately overbought
+            down_score += 0.1
+        
+        # MACD signals (TREND indicator - follows momentum)
+        if macd_histogram > 0.0001:  # Positive momentum
+            up_score += 0.2
+        elif macd_histogram < -0.0001:  # Negative momentum
+            down_score += 0.2
+        
+        # Momentum signals (TREND indicator)
+        if momentum > 0.0001:
+            up_score += 0.15
+        elif momentum < -0.0001:
+            down_score += 0.15
+        
+        # Bollinger Bands signals (REVERSAL indicator - extremes suggest opposite)
+        if bb_position < 0.2:  # Near lower band - expect bounce UP
+            up_score += 0.15
+        elif bb_position > 0.8:  # Near upper band - expect reversal DOWN
+            down_score += 0.15
+        
+        # Determine direction and confidence
+        total_score = up_score + down_score
+        
+        if total_score < 0.3:  # Not enough signal strength
+            return None
+        
+        if up_score > down_score:
             direction = 'up'
-        elif rsi > 70:  # Overbought - potential reversal down
-            signal_strength += 0.2
+            confidence = up_score / (up_score + down_score)  # Normalize to 0-1
+        elif down_score > up_score:
             direction = 'down'
-        
-        # MACD signals
-        if macd_histogram > 0:
-            signal_strength += 0.15
-            if direction is None:
-                direction = 'up'
-        elif macd_histogram < 0:
-            signal_strength += 0.15
-            if direction is None:
-                direction = 'down'
-        
-        # Momentum signals
-        if momentum > 0:
-            signal_strength += 0.15
-            if direction is None:
-                direction = 'up'
-        elif momentum < 0:
-            signal_strength += 0.15
-            if direction is None:
-                direction = 'down'
-        
-        # Bollinger Bands signals
-        if bb_position < 0.2:  # Near lower band
-            signal_strength += 0.1
-            if direction is None:
-                direction = 'up'
-        elif bb_position > 0.8:  # Near upper band
-            signal_strength += 0.1
-            if direction is None:
-                direction = 'down'
+            confidence = down_score / (up_score + down_score)
+        else:
+            return None  # Tied - no clear signal
         
         # Adjust confidence based on market state
         state_multiplier = {
-            'trending_up': 1.2 if direction == 'up' else 0.8,
-            'trending_down': 1.2 if direction == 'down' else 0.8,
-            'ranging': 0.9,
-            'volatile': 0.85,
+            'trending_up': 1.15 if direction == 'up' else 0.85,
+            'trending_down': 1.15 if direction == 'down' else 0.85,
+            'ranging': 0.95,  # Slightly reduce in ranging markets
+            'volatile': 0.8,   # Reduce significantly in volatile markets
             'calm': 1.1,
-            'unknown': 1.0
+            'unknown': 0.9
         }.get(market_state, 1.0)
         
-        confidence = min(signal_strength * state_multiplier, 0.85)
+        confidence = min(confidence * state_multiplier, 0.85)
         
-        if direction and confidence >= 0.5:
+        # Only return signal if confidence is reasonable
+        if confidence >= 0.5:
             return {'direction': direction, 'confidence': confidence}
         
         return None
     
     def _calculate_ensemble_confidence(self, signals: Dict, confidences: Dict) -> float:
-        """Calculate weighted ensemble confidence."""
+        """Calculate weighted ensemble confidence with dynamic adjustments."""
         if not signals:
             return 0.0
         
@@ -245,11 +261,26 @@ class DecisionEngine:
         
         ensemble_conf = weighted_confidence / total_weight
         
-        # Boost if all signals agree
-        if len(signals) >= 2:
-            directions = set(signals.values())
-            if len(directions) == 1:  # All signals agree
-                ensemble_conf = min(ensemble_conf * 1.15, 1.0)  # Boost by 15%
+        # Check agreement/disagreement
+        directions = list(signals.values())
+        up_count = directions.count('up')
+        down_count = directions.count('down')
+        total_signals = len(directions)
+        
+        if total_signals >= 2:
+            if up_count == total_signals or down_count == total_signals:
+                # Perfect agreement - boost confidence
+                ensemble_conf = min(ensemble_conf * 1.2, 0.98)
+            elif total_signals == 3 and (up_count == 2 or down_count == 2):
+                # 2 out of 3 agree - slight boost
+                ensemble_conf = min(ensemble_conf * 1.05, 0.95)
+            else:
+                # Disagreement - reduce confidence significantly
+                ensemble_conf = ensemble_conf * 0.7
+        
+        # Penalize if only one signal source (less reliable)
+        if total_signals == 1:
+            ensemble_conf = ensemble_conf * 0.85
         
         return ensemble_conf
     

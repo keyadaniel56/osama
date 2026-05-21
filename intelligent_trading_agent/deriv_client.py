@@ -20,10 +20,11 @@ class DerivClient:
     Handles: connection, authorization, tick streaming, contract execution.
     """
     
-    def __init__(self, app_id: str, token: str, symbol: str = "R_100"):
+    def __init__(self, app_id: str, token: str, symbol: str = "R_100", symbols: List[str] = None):
         self.app_id = app_id
         self.token = token
-        self.symbol = symbol
+        self.symbol = symbol  # Primary symbol for trading
+        self.symbols = symbols or [symbol]  # All symbols to monitor
         self.ws = None
         self.connected = False
         self.authorized = False
@@ -38,8 +39,8 @@ class DerivClient:
         self._pending_contracts: Dict = {}
         self._lock = threading.Lock()
         
-        # Tick history for analysis
-        self.tick_history: List[Dict] = []
+        # Tick history for analysis (per symbol)
+        self.tick_history: Dict[str, List[Dict]] = {sym: [] for sym in self.symbols}
         self.max_history_size = 500
     
     def connect(self):
@@ -142,27 +143,33 @@ class DerivClient:
             self._subscribe_ticks()
     
     def _subscribe_ticks(self):
-        """Subscribe to tick updates."""
-        self._send({
-            "ticks": self.symbol,
-            "subscribe": 1
-        })
+        """Subscribe to tick updates for all monitored symbols."""
+        for symbol in self.symbols:
+            self._send({
+                "ticks": symbol,
+                "subscribe": 1
+            })
+            agent_logger.log_info(f"Subscribed to ticks: {symbol}")
     
     def _handle_tick(self, data: Dict):
         """Handle tick data."""
         try:
             tick = data.get("tick", {})
+            symbol = tick.get('symbol', self.symbol)
             tick_data = {
                 'epoch': tick.get('epoch'),
                 'quote': tick.get('quote'),
-                'symbol': tick.get('symbol'),
+                'symbol': symbol,
                 'timestamp': time.time()
             }
             
-            # Store in history
-            self.tick_history.append(tick_data)
-            if len(self.tick_history) > self.max_history_size:
-                self.tick_history.pop(0)
+            # Store in history per symbol
+            if symbol not in self.tick_history:
+                self.tick_history[symbol] = []
+            
+            self.tick_history[symbol].append(tick_data)
+            if len(self.tick_history[symbol]) > self.max_history_size:
+                self.tick_history[symbol].pop(0)
             
             # Trigger callback
             if self.on_tick:
@@ -182,6 +189,7 @@ class DerivClient:
         buy_price = contract.get("buy_price", 0)
         
         if contract_id:
+            contract_id = str(contract_id)  # Normalize to string
             self._pending_contracts[contract_id] = {
                 'type': 'buy',
                 'time': time.time(),
@@ -204,16 +212,42 @@ class DerivClient:
     def _handle_contract_update(self, data: Dict):
         """Handle contract status updates."""
         contract = data.get("proposal_open_contract", {})
-        contract_id = contract.get("contract_id")
-        status = contract.get("status")
+        contract_id = str(contract.get("contract_id", ""))  # Normalize to string
+        status = contract.get("status", "")
+        is_expired = contract.get("is_expired", 0)
+        is_sold = contract.get("is_sold", 0)
+        profit = contract.get("profit", 0)
+        sell_price = contract.get("sell_price", 0)
         
-        if status == "sold" or status == "won" or status == "lost":
-            sell_price = contract.get("sell_price", 0)
-            profit = contract.get("profit", 0)
+        # Log every update so we can see when contract expires
+        if contract_id:
+            pending = self._pending_contracts.get(contract_id, {})
+            update_count = pending.get('update_count', 0) + 1
+            if contract_id in self._pending_contracts:
+                self._pending_contracts[contract_id]['update_count'] = update_count
             
-            agent_logger.log_info(f"Contract {contract_id} {status} - Sell: ${sell_price:.2f}, Profit: ${profit:.2f}")
+            if update_count % 30 == 0 or status not in ('open', ''):
+                elapsed = time.time() - pending.get('time', time.time()) if pending else 0
+                agent_logger.log_info(
+                    f"Contract {contract_id}: status={status}, "
+                    f"is_expired={is_expired}, is_sold={is_sold}, "
+                    f"profit={profit}, elapsed={elapsed:.0f}s"
+                )
+        
+        # Fire result when contract is closed — check ALL possible close indicators
+        contract_closed = (
+            status in ("sold", "won", "lost")
+            or is_expired == 1
+            or is_sold == 1
+        )
+        
+        if contract_closed and contract_id:
+            agent_logger.log_info(
+                f"Contract {contract_id} CLOSED — status={status}, "
+                f"sell_price=${sell_price:.2f}, profit=${profit:.2f}"
+            )
             
-            # Trigger callback with result
+            # Fire result callback — agent uses this to update active_contracts
             if self.on_contract_result:
                 self.on_contract_result({
                     'contract_id': contract_id,
@@ -223,7 +257,7 @@ class DerivClient:
                     'timestamp': time.time()
                 })
             
-            # Clean up
+            # Clean up pending contracts
             if contract_id in self._pending_contracts:
                 del self._pending_contracts[contract_id]
     
@@ -296,9 +330,11 @@ class DerivClient:
         # Returns contract_id asynchronously via callback
         return None
     
-    def get_tick_history(self) -> List[Dict]:
-        """Get recent tick history."""
-        return self.tick_history.copy()
+    def get_tick_history(self, symbol: str = None) -> List[Dict]:
+        """Get recent tick history for a symbol."""
+        if symbol is None:
+            symbol = self.symbol
+        return self.tick_history.get(symbol, []).copy()
     
     def get_pending_contracts(self) -> Dict:
         """Get pending contracts."""

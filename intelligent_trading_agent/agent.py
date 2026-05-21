@@ -59,12 +59,15 @@ class IntelligentTradingAgent:
         self.strategy_selector = StrategySelector(BASE_STAKE)
         self.learning_system = LearningSystem()
         self.risk_manager = RiskManager()
-        self.ml_predictor = MLPredictor(MODELS_DIR)  # ML predictor
+        self.ml_predictor = MLPredictor(MODELS_DIR, contract_duration_minutes=CONTRACT_DURATION)  # ML predictor with contract duration
         self.pattern_recognizer = ChartPatternRecognizer(window=100)  # Pattern recognition
         
         # Decision engine (combines ML + patterns + indicators)
         self.decision_engine = DecisionEngine()
         self.risk_adjusted_decision = RiskAdjustedDecision(self.decision_engine, self.risk_manager)
+        
+        # Rise/Fall optimization: Prefer rise_fall strategy
+        self.preferred_strategy = 'rise_fall'  # Most profitable for trend following
         
         # Multi-market monitoring
         self.multi_market_monitor = MultiMarketMonitor(AVAILABLE_SYMBOLS, BASE_STAKE)
@@ -90,11 +93,13 @@ class IntelligentTradingAgent:
         
         # Active trade tracking
         self.active_contracts = {}  # contract_id -> trade_info
+        self.processed_contracts = set()  # Track processed to avoid duplicates
         self.max_concurrent_trades = MAX_CONCURRENT_TRADES  # From config
         
         # Current state
         self.current_market_state = "unknown"
         self.current_strategy = None
+        self.current_patterns = {}  # Store detected patterns for ML
         self.market_health = 0.0
         self.confidence = 0.0
         self.trade_direction = None
@@ -106,11 +111,17 @@ class IntelligentTradingAgent:
         agent_logger.log_info("  - Market Analyzer (feature extraction, state detection)")
         agent_logger.log_info("  - Strategy Selector (dynamic strategy matching)")
         agent_logger.log_info("  - Pattern Recognition (chart pattern detection)")
-        agent_logger.log_info(f"  - Multi-Market Monitor ({len(AVAILABLE_SYMBOLS)} markets)")
+        agent_logger.log_info(f"  - Multi-Market Monitor ({len(AVAILABLE_SYMBOLS)} markets: {', '.join(AVAILABLE_SYMBOLS)})")
         agent_logger.log_info("  - ML Predictor (machine learning models)")
         agent_logger.log_info("  - Decision Engine (ensemble signals: ML + Patterns + Indicators)")
         agent_logger.log_info("  - Learning System (continuous adaptation)")
         agent_logger.log_info("  - Risk Manager (position sizing, drawdown control)")
+        
+        if self.monitoring_multiple_markets:
+            agent_logger.log_info(f"🌐 Multi-market mode ENABLED - Monitoring {len(AVAILABLE_SYMBOLS)} markets simultaneously")
+            agent_logger.log_info(f"   Will automatically switch to best opportunities across: {', '.join(AVAILABLE_SYMBOLS)}")
+        else:
+            agent_logger.log_info(f"📊 Single-market mode - Trading on {DEFAULT_SYMBOL} only")
     
     def start(self):
         """Start the trading agent."""
@@ -140,7 +151,7 @@ class IntelligentTradingAgent:
     def _initialize_connection(self):
         """Initialize connection to Deriv API."""
         try:
-            self.client = DerivClient(DERIV_APP_ID, DERIV_API_TOKEN, self.symbol)
+            self.client = DerivClient(DERIV_APP_ID, DERIV_API_TOKEN, self.symbol, self.symbols)
             
             # Set up callbacks
             self.client.on_tick = self._on_tick_received
@@ -149,7 +160,7 @@ class IntelligentTradingAgent:
             
             # Connect
             self.client.connect()
-            agent_logger.log_info(f"Connected to Deriv API - Symbol: {self.symbol}")
+            agent_logger.log_info(f"Connected to Deriv API - Primary: {self.symbol}, Monitoring: {', '.join(self.symbols)}")
         except Exception as e:
             agent_logger.log_error(f"Failed to connect to Deriv: {e}")
             raise
@@ -158,27 +169,146 @@ class IntelligentTradingAgent:
         """Main trading loop with integrated subsystems - multi-market enabled."""
         agent_logger.log_info("Entering main trading loop...")
         
+        # Track last processed tick per symbol to avoid reprocessing
+        last_processed_tick = {sym: 0 for sym in self.symbols}
+        
         while self.running:
             try:
-                # Step 1: Get market data for current symbol
-                price = self._get_price()
-                if price is None:
-                    time.sleep(1)
+                # Step 1: Check if we have NEW ticks for any symbol
+                has_new_tick = False
+                for sym in self.symbols:
+                    tick_history = self.client.get_tick_history(sym)
+                    if tick_history and len(tick_history) > last_processed_tick[sym]:
+                        has_new_tick = True
+                        break
+                
+                # If no new ticks, wait and continue
+                if not has_new_tick:
+                    time.sleep(0.1)
                     continue
                 
-                # Step 2: Update current symbol's analyzer
-                self.current_market_analyzer.update(price, volume=1.0)
+                # Step 2: Process NEW ticks for ALL symbols
+                for sym in self.symbols:
+                    tick_history = self.client.get_tick_history(sym)
+                    if tick_history and len(tick_history) > last_processed_tick[sym]:
+                        # Process all new ticks since last check
+                        for i in range(last_processed_tick[sym], len(tick_history)):
+                            tick = tick_history[i]
+                            sym_price = tick.get('quote')
+                            
+                            if sym_price and sym in self.market_analyzers:
+                                # Update analyzer for this symbol
+                                self.market_analyzers[sym].update(sym_price, volume=1.0)
+                                
+                                # If this is our current trading symbol, also update other systems
+                                if sym == self.symbol:
+                                    self.latest_price = sym_price
+                        
+                        # Update last processed count
+                        last_processed_tick[sym] = len(tick_history)
+                
+                # Step 3: Get price for current trading symbol
+                price = self._get_price()
+                if price is None:
+                    time.sleep(0.1)
+                    continue
+                
+                # Step 4: Update current symbol's systems (strategy selector, pattern recognizer, etc.)
+                # Only update once per new tick (not every loop iteration)
                 self.strategy_selector.update_market_data(price, volume=1.0)
+                self.pattern_recognizer.add_price(price)  # Feed price to pattern recognizer
                 self.tick_count += 1
                 
-                # Step 3: Periodically switch and analyze other markets
-                if self.tick_count % 50 == 0 and self.monitoring_multiple_markets:
+                # Step 2.25: Let ML predictor observe the market (learn from actual movements)
+                # Enrich with pattern data
+                market_data_for_ml = {
+                    'features': self.current_market_analyzer.feature_engine.extract_features(),
+                    'price': price,
+                    'timestamp': datetime.now().isoformat(),
+                    'symbol': self.symbol
+                }
+                
+                # Add pattern information if available
+                if hasattr(self, 'current_patterns') and self.current_patterns:
+                    has_bullish = 0.0
+                    has_bearish = 0.0
+                    max_confidence = 0.0
+                    breakout_dir = 0.0
+                    breakout_detected = 0.0
+                    
+                    for pattern_name, pattern_info in self.current_patterns.items():
+                        conf = pattern_info.get('confidence', 0.0)
+                        signal = pattern_info.get('signal', '')
+                        
+                        if conf > max_confidence:
+                            max_confidence = conf
+                        
+                        if 'bullish' in signal or 'upside' in signal or signal == 'up':
+                            has_bullish = 1.0
+                        elif 'bearish' in signal or 'downside' in signal or signal == 'down':
+                            has_bearish = 1.0
+                        
+                        if 'breakout' in pattern_name:
+                            breakout_detected = 1.0
+                            if 'upside' in signal:
+                                breakout_dir = 1.0
+                            elif 'downside' in signal:
+                                breakout_dir = -1.0
+                    
+                    market_data_for_ml['features']['has_bullish_pattern'] = has_bullish
+                    market_data_for_ml['features']['has_bearish_pattern'] = has_bearish
+                    market_data_for_ml['features']['pattern_confidence'] = max_confidence
+                    market_data_for_ml['features']['breakout_detected'] = breakout_detected
+                    market_data_for_ml['features']['breakout_direction'] = breakout_dir
+                
+                self.ml_predictor.observe_market(market_data_for_ml, price)
+                
+                # Step 2.3: Validate ML predictions against actual price movements
+                # Validate every contract duration (5 minutes = 300 ticks)
+                if self.tick_count % (CONTRACT_DURATION * 60) == 0:
+                    self.ml_predictor.validate_predictions(price)
+                
+                # Step 2.5: Update multi-market monitor for ALL symbols
+                if self.monitoring_multiple_markets:
+                    for sym in self.symbols:
+                        if sym in self.market_analyzers:
+                            # Get latest price for this symbol
+                            sym_tick_history = self.client.get_tick_history(sym)
+                            if sym_tick_history:
+                                sym_latest_price = sym_tick_history[-1].get('quote')
+                                if sym_latest_price:
+                                    self.multi_market_monitor.update_market(sym, sym_latest_price, volume=1.0)
+                
+                # Step 3: Periodically scan and switch to best market
+                if self.tick_count % 25 == 0 and self.monitoring_multiple_markets:
+                    # Log current tick counts for all symbols
+                    if self.tick_count % 100 == 0:
+                        tick_counts = {sym: len(self.client.get_tick_history(sym)) for sym in self.symbols}
+                        agent_logger.log_info(f"📊 Tick counts by symbol: {tick_counts}")
+                    
                     best_opportunity = self._find_best_market_opportunity()
                     if best_opportunity and best_opportunity.symbol != self.symbol:
-                        self.symbol = best_opportunity.symbol
-                        self.current_market_analyzer = self.market_analyzers[self.symbol]
-                        self.client.symbol = self.symbol
-                        agent_logger.log_info(f"📊 Switched to best market: {self.symbol} (score: {best_opportunity.score:.1f})")
+                        # Check if new market is significantly better (score difference > 10)
+                        current_score = self._calculate_current_market_score()
+                        if best_opportunity.score > current_score + 10:
+                            agent_logger.log_info(
+                                f"🔄 Switching markets: {self.symbol} (score={current_score:.1f}) → "
+                                f"{best_opportunity.symbol} (score={best_opportunity.score:.1f})"
+                            )
+                            self.symbol = best_opportunity.symbol
+                            self.current_market_analyzer = self.market_analyzers[self.symbol]
+                            self.pattern_recognizer = ChartPatternRecognizer(window=100)
+                            self.client.symbol = self.symbol
+                            agent_logger.log_info(
+                                f"📊 New market: {best_opportunity.symbol} | "
+                                f"State: {best_opportunity.market_state} | "
+                                f"Strategy: {best_opportunity.strategy} | "
+                                f"Confidence: {best_opportunity.confidence:.2f}"
+                            )
+                
+                # Step 3.5: Log multi-market status periodically
+                if self.tick_count % 100 == 0 and self.monitoring_multiple_markets:
+                    self._log_multi_market_status()
                 
                 # Step 4: Analyze current market state
                 self.current_market_state = self.current_market_analyzer.detect_market_state()
@@ -187,73 +317,238 @@ class IntelligentTradingAgent:
                 
                 # Debug logging every 50 ticks
                 if self.tick_count % 50 == 0:
+                    patterns_str = f", patterns={len(patterns_detected)}" if patterns_detected else ""
+                    ml_str = f", ml={ml_prediction_direction}@{ml_confidence:.2f}" if ml_prediction_direction != 'HOLD' else ""
+                    ensemble_str = f", ensemble={trade_direction}@{ensemble_confidence:.2f}" if trade_direction else ""
                     agent_logger.log_info(
                         f"Analysis: ticks={self.tick_count}, "
                         f"state={self.current_market_state}, "
                         f"health={self.market_health:.1f}, "
                         f"strategy={self.current_strategy}, "
                         f"confidence={confidence:.2f}"
+                        f"{patterns_str}{ml_str}{ensemble_str}"
                     )
                 
                 # Step 5: Build market data for strategies
                 market_data = {
                     'features': self.current_market_analyzer.feature_engine.extract_features(),
                     'price': price,
-                    'timestamp': datetime.now(),
+                    'timestamp': datetime.now().isoformat(),
                     'symbol': self.symbol
                 }
                 
-                # Step 6: Select best strategy
-                strategy, confidence = self.strategy_selector.select_strategy(market_data)
-                self.current_strategy = strategy
+                # Step 6: Detect chart patterns
+                patterns_detected = self.pattern_recognizer.detect_all_patterns()
+                self.current_patterns = patterns_detected  # Store for ML enrichment
                 
-                # Step 7: Check if market state is known (don't trade on unknown conditions)
-                if self.current_market_state == "unknown":
-                    agent_logger.log_warning(f"Skipping trade - market state is unknown (insufficient data)")
+                # Log detected patterns
+                if patterns_detected and self.tick_count % 100 == 0:
+                    agent_logger.log_info(f"📊 Patterns detected: {list(patterns_detected.keys())}")
+                    for pattern_name, pattern_info in patterns_detected.items():
+                        agent_logger.log_info(
+                            f"  • {pattern_name}: {pattern_info.get('signal')} "
+                            f"(conf={pattern_info.get('confidence', 0):.2f})"
+                        )
+                
+                # Step 6.5: Get ML prediction
+                ml_prediction_direction, ml_confidence = self.ml_predictor.predict(market_data)
+                ml_prediction = {
+                    'direction': ml_prediction_direction.lower() if ml_prediction_direction != 'HOLD' else None,
+                    'confidence': ml_confidence
+                }
+                
+                # Step 6.75: Prepare pattern data for decision engine
+                pattern_data = None
+                if patterns_detected:
+                    pattern_data = {'patterns': {}}
+                    for pattern_name, pattern_info in patterns_detected.items():
+                        signal = pattern_info.get('signal', '')
+                        pattern_type = None
+                        if 'bullish' in signal or 'up' in signal:
+                            pattern_type = 'bullish'
+                        elif 'bearish' in signal or 'down' in signal:
+                            pattern_type = 'bearish'
+                        else:
+                            pattern_type = 'neutral'
+                        
+                        pattern_data['patterns'][pattern_name] = {
+                            'type': pattern_type,
+                            'confidence': pattern_info.get('confidence', 0.5),
+                            'signal': signal
+                        }
+                
+                # Step 7: Use decision engine to combine ML + patterns + indicators
+                indicators = market_data['features']
+                
+                # CRITICAL SAFEGUARD: Check for extreme indicator conditions
+                rsi = indicators.get('rsi', 50)
+                bb_position = indicators.get('bb_position', 0.5)
+                
+                # Block trading if indicators are at dangerous extremes
+                # RSI 0-5 = extremely oversold (market falling hard)
+                # RSI 95-100 = extremely overbought (market rising hard)
+                if rsi >= 95:
+                    if self.tick_count % 100 == 0:
+                        agent_logger.log_warning(
+                            f"⚠️ EXTREME OVERBOUGHT: RSI={rsi:.1f} - Waiting for reversal or stabilization"
+                        )
                     time.sleep(0.05)
                     continue
                 
-                # Step 7.5: Require more data before first trade (quality check)
-                # Don't trade immediately at tick 50 - wait for more confirmation
-                if self.tick_count < 100 and self.total_trades == 0:
+                if rsi <= 5:
+                    if self.tick_count % 100 == 0:
+                        agent_logger.log_warning(
+                            f"⚠️ EXTREME OVERSOLD: RSI={rsi:.1f} - Waiting for reversal or stabilization"
+                        )
+                    time.sleep(0.05)
+                    continue
+                
+                if bb_position >= 0.98 or bb_position <= 0.02:
+                    if self.tick_count % 100 == 0:
+                        agent_logger.log_warning(
+                            f"⚠️ EXTREME BB position: {bb_position:.2f} - Price at extreme band, waiting for mean reversion"
+                        )
+                    time.sleep(0.05)
+                    continue
+                
+                trade_direction, ensemble_confidence = self.decision_engine.make_decision(
+                    ml_prediction=ml_prediction,
+                    patterns=pattern_data,
+                    indicators=indicators,
+                    market_state=self.current_market_state,
+                    market_health=self.market_health
+                )
+                
+                # Store for logging
+                self.trade_direction = trade_direction
+                self.ensemble_confidence = ensemble_confidence
+                self.current_signals = {
+                    'ml': ml_prediction,
+                    'patterns': pattern_data,
+                    'indicators': indicators
+                }
+                
+                # Step 7.25: Select strategy based on ensemble decision
+                # Prefer rise_fall for trend following (most profitable)
+                strategy, confidence = self.strategy_selector.select_strategy(market_data)
+                
+                # Force rise_fall if we have a clear directional signal
+                if trade_direction and strategy != 'accumulator':
+                    strategy = 'rise_fall'
+                    agent_logger.log_info(f"📈 Using rise_fall strategy (trend following) for {trade_direction.upper()} signal")
+                
+                self.current_strategy = strategy
+                
+                # Override confidence with ensemble confidence if decision engine has a signal
+                if trade_direction and ensemble_confidence > confidence:
+                    confidence = ensemble_confidence
+                    agent_logger.log_info(
+                        f"🎯 Ensemble decision: {trade_direction.upper()} "
+                        f"(conf={ensemble_confidence:.2f}) overrides strategy confidence"
+                    )
+                
+                # Step 7: (market state check handled in Step 7.5 below)
+                
+                # Step 7.5: Warmup phase — wait for enough data for reliable analysis.
+                # Need at least 200 ticks so RSI-14, MACD, SMA-50, and Bollinger Bands
+                # are all computed from sufficient history before placing any trade.
+                WARMUP_TICKS = 200
+                if self.tick_count < WARMUP_TICKS:
+                    if self.tick_count % 25 == 0:
+                        pct = int(self.tick_count / WARMUP_TICKS * 100)
+                        bar = ('█' * (pct // 5)).ljust(20)
+                        agent_logger.log_info(
+                            f"📊 Warming up market data: [{bar}] {pct}% "
+                            f"({self.tick_count}/{WARMUP_TICKS} ticks) — "
+                            f"state={self.current_market_state}, health={self.market_health:.1f}"
+                        )
+                    time.sleep(0.05)
+                    continue
+                
+                # After warmup, block if EITHER the agent's or strategy selector's
+                # market state is still unknown. Both must agree on a real state.
+                selector_state = self.strategy_selector.current_market_state or "unknown"
+                if self.current_market_state == "unknown" or selector_state == "unknown":
                     if self.tick_count % 50 == 0:
-                        agent_logger.log_info(f"Collecting more data before first trade ({self.tick_count}/100 ticks)")
+                        agent_logger.log_warning(
+                            f"⏸ Market state still unknown after {self.tick_count} ticks "
+                            f"(agent={self.current_market_state}, selector={selector_state}) — "
+                            f"waiting for clearer conditions before trading"
+                        )
                     time.sleep(0.05)
                     continue
                 
                 # Step 8: Check risk constraints
                 can_trade = self.risk_manager.should_trade(confidence, self.market_health)
                 
-                # Step 9: Check if we have room for more trades
-                has_capacity = len(self.active_contracts) < self.max_concurrent_trades
+                # Step 9: Wait for active trade to close before opening another
+                # If there is already an open contract, skip until it settles.
+                if len(self.active_contracts) >= self.max_concurrent_trades:
+                    if self.tick_count % 100 == 0:
+                        agent_logger.log_info(
+                            f"⏳ Waiting for trade to close before opening new one "
+                            f"(active={len(self.active_contracts)}/{self.max_concurrent_trades})"
+                        )
+                    time.sleep(0.05)
+                    continue
                 
                 # Step 10: Check trade cooldown (prevent rapid-fire trading)
                 ticks_since_last_trade = self.tick_count - self.last_trade_tick
                 cooldown_ready = ticks_since_last_trade >= self.trade_cooldown
                 
-                # Step 11: Calculate position size and execute if conditions met
-                if can_trade and has_capacity and cooldown_ready and strategy != 'hold':
+                # Step 11: Execute trade based on ensemble decision
+                # The ensemble combines:
+                # - ML model (trained on actual 5-minute price movements)
+                # - Chart patterns (breakouts, support/resistance, SMC concepts)
+                # - Technical indicators (RSI, MACD, Bollinger Bands)
+                # No tick counting - trust the pattern recognition and trained ML
+                
+                # Only trade if ensemble provides a clear direction
+                if trade_direction is None:
+                    if self.tick_count % 100 == 0 and strategy != 'hold':
+                        agent_logger.log_info(
+                            f"Not trading: ensemble_no_direction (waiting for clear signal)"
+                        )
+                    time.sleep(0.05)
+                    continue
+                
+                # Check if ensemble agrees with strategy
+                ensemble_agrees = (
+                    strategy == 'hold' or
+                    (trade_direction == 'up' and strategy in ['higher_lower', 'rise_fall', 'accumulator']) or
+                    (trade_direction == 'down' and strategy in ['higher_lower', 'rise_fall'])
+                )
+                
+                # Execute trade if all conditions met
+                if can_trade and cooldown_ready and strategy != 'hold' and ensemble_agrees:
+                    agent_logger.log_info(
+                        f"✅ Trade signal: {trade_direction.upper()} | "
+                        f"Ensemble: {ensemble_confidence:.2%} | "
+                        f"ML: {ml_prediction.get('confidence', 0):.2%} | "
+                        f"State: {self.current_market_state} | "
+                        f"Health: {self.market_health:.1f}/100"
+                    )
+                    
                     volatility = market_data['features'].get('volatility', 0.5)
                     position_size = self.risk_manager.calculate_position_size(confidence, volatility)
                     
-                    # Execute trade on current symbol
-                    self._execute_trade(strategy, market_data, confidence, position_size)
-                    self.last_trade_tick = self.tick_count  # Update last trade time
-                elif self.tick_count % 100 == 0:
-                    # Log why we're not trading (every 100 ticks)
-                    reasons = []
-                    min_health = MIN_MARKET_HEALTH  # Store in local variable to avoid any scoping issues
-                    if not can_trade:
-                        reasons.append(f"can_trade=False (conf={confidence:.2f}<{self.risk_manager.min_confidence_threshold:.2f} or health={self.market_health}<{min_health})")
-                    if not has_capacity:
-                        reasons.append(f"no_capacity (active={len(self.active_contracts)}/{self.max_concurrent_trades})")
-                    if not cooldown_ready:
-                        reasons.append(f"cooldown ({ticks_since_last_trade}/{self.trade_cooldown} ticks)")
-                    if strategy == 'hold':
-                        reasons.append("strategy=hold")
-                    
-                    if reasons:
-                        agent_logger.log_info(f"Not trading: {', '.join(reasons)}")
+                    self._execute_trade(strategy, market_data, confidence, position_size, ensemble_direction=trade_direction)
+                    self.last_trade_tick = self.tick_count
+                else:
+                    # Log why we're not trading (occasionally)
+                    if self.tick_count % 100 == 0:
+                        reasons = []
+                        min_health = MIN_MARKET_HEALTH
+                        if not can_trade:
+                            reasons.append(f"conf={confidence:.2f}<{self.risk_manager.min_confidence_threshold:.2f} or health={self.market_health}<{min_health}")
+                        if not cooldown_ready:
+                            reasons.append(f"cooldown ({ticks_since_last_trade}/{self.trade_cooldown} ticks)")
+                        if strategy == 'hold':
+                            reasons.append("strategy=hold")
+                        if not ensemble_agrees:
+                            reasons.append(f"ensemble_disagrees (direction={trade_direction}, strategy={strategy})")
+                        if reasons:
+                            agent_logger.log_info(f"Not trading: {', '.join(reasons)}")
                 
                 # Step 12: Check for stuck contracts (contracts open for too long)
                 if self.tick_count % 500 == 0 and len(self.active_contracts) > 0:
@@ -261,11 +556,12 @@ class IntelligentTradingAgent:
                         tick_opened = trade.get('tick_opened', self.tick_count)
                         ticks_open = self.tick_count - tick_opened
                         # 5-minute contract should close in ~300 ticks (at 1 tick/sec)
-                        # If open for 600+ ticks (10 minutes), it's stuck
-                        if ticks_open > 600:
+                        # But we're seeing 600-1000 ticks in practice
+                        # If open for 1200+ ticks (20 minutes), it's definitely stuck
+                        if ticks_open > 1200:
                             agent_logger.log_warning(
                                 f"⚠️ Stuck contract detected: {key} open for {ticks_open} ticks "
-                                f"(expected ~300). Removing from active list."
+                                f"(expected ~300-600). Removing from active list."
                             )
                             # Remove stuck contract
                             del self.active_contracts[key]
@@ -307,13 +603,31 @@ class IntelligentTradingAgent:
     
     def _on_tick_received(self, tick_data: Dict):
         """Callback when new tick is received from Deriv."""
-        self.latest_price = tick_data.get('quote')
+        price = tick_data.get('quote')
+        symbol = tick_data.get('symbol', self.symbol)
+        
+        # Update the appropriate market analyzer
+        if symbol in self.market_analyzers:
+            # If this is the current trading symbol, update latest_price
+            if symbol == self.symbol:
+                self.latest_price = price
+            
+            # Update the analyzer for this symbol
+            # Note: This happens in the WebSocket thread, but the main loop
+            # will process it in the next iteration
+            # We'll handle the full update in the main loop
+        else:
+            agent_logger.log_warning(f"Received tick for unknown symbol: {symbol}")
     
     def _on_contract_result(self, result: Dict):
         """Callback when contract result is received."""
-        contract_id = result.get('contract_id')
+        contract_id = str(result.get('contract_id', ''))
         profit = result.get('profit', 0)
         status = result.get('status', 'unknown')
+        
+        if contract_id in self.processed_contracts:
+            agent_logger.log_info(f"⏭️ Contract {contract_id} already processed, skipping duplicate result.")
+            return
         
         agent_logger.log_info(f"📋 Contract result received: ID={contract_id}, profit=${profit:.2f}, status={status}")
         agent_logger.log_info(f"📊 Active contracts before processing: {list(self.active_contracts.keys())}")
@@ -399,6 +713,11 @@ class IntelligentTradingAgent:
         stake = trade_info.get('buy_price', 0)
         self.risk_manager.record_trade_result(stake, is_win, profit)
         
+        # Record in multi-market monitor for symbol-specific performance
+        trade_symbol = trade_info.get('symbol', self.symbol)
+        if self.monitoring_multiple_markets:
+            self.multi_market_monitor.record_trade_result(trade_symbol, is_win, profit)
+        
         # Update trade count and PnL history
         cumulative_pnl = self.daily_profit - self.daily_loss
         self.pnl_history.append(cumulative_pnl)
@@ -425,6 +744,7 @@ class IntelligentTradingAgent:
             del self.active_contracts[contract_id]
             agent_logger.log_info(f"🗑️ Removed contract {contract_id} from active list")
         
+        self.processed_contracts.add(contract_id)
         agent_logger.log_info(f"📊 Active contracts after processing: {list(self.active_contracts.keys())}")
         agent_logger.log_info(f"✅ Contract {contract_id} fully processed and closed")
     
@@ -467,8 +787,8 @@ class IntelligentTradingAgent:
         
         return False
     
-    def _execute_trade(self, strategy: str, market_data: Dict, confidence: float, position_size: float):
-        """Execute a trade using the selected strategy with ML enhancement."""
+    def _execute_trade(self, strategy: str, market_data: Dict, confidence: float, position_size: float, ensemble_direction: str = None):
+        """Execute a trade using the selected strategy with ML enhancement and ensemble direction."""
         try:
             # Get actual prediction from the strategy (technical analysis)
             strategy_obj = self.strategy_selector.strategies.get(strategy)
@@ -482,36 +802,53 @@ class IntelligentTradingAgent:
             if signal.action != 'BUY':
                 return  # Strategy says don't trade
             
-            # Get ML prediction
-            ml_prediction, ml_confidence = self.ml_predictor.predict(market_data)
+            # Initialize variables for logging
+            ta_prediction = None
+            ml_prediction = 'HOLD'
+            ml_confidence = 0.0
             
-            # Combine technical analysis with ML
-            # Convert strategy prediction to UP/DOWN
-            if strategy == 'higher_lower':
-                ta_prediction = 'UP' if signal.contract_type == 'HIGHER' else 'DOWN'
-            elif strategy == 'rise_fall':
-                ta_prediction = 'UP' if signal.contract_type == 'RISE' else 'DOWN'
+            # Get ML stats for logging
+            ml_stats = self.ml_predictor.get_stats()
+            
+            # Use ensemble direction if provided, otherwise fall back to strategy
+            if ensemble_direction:
+                final_prediction = ensemble_direction.upper()  # 'UP' or 'DOWN'
+                final_confidence = confidence
+                agent_logger.log_info(
+                    f"✓ Using ensemble direction: {final_prediction} (conf={final_confidence:.2f}) | "
+                    f"ML Stats: training_acc={ml_stats['model_accuracy']:.2%}, "
+                    f"live_acc={ml_stats.get('live_accuracy', 0):.2%}, "
+                    f"samples={ml_stats['training_samples']}"
+                )
             else:
-                ta_prediction = 'UP'  # Default for accumulator
-            
-            # Decision logic: Both must agree OR ML must be very confident
-            final_prediction = ta_prediction
-            final_confidence = confidence
-            
-            if self.ml_predictor.is_trained:
-                if ml_prediction == ta_prediction:
-                    # Both agree - boost confidence
-                    final_confidence = min(confidence + ml_confidence * 0.3, 1.0)
-                    agent_logger.log_info(f"✓ Agreement: TA={ta_prediction}, ML={ml_prediction} → Confidence boosted to {final_confidence:.2f}")
-                elif ml_confidence > 0.75:
-                    # ML very confident, override TA
-                    final_prediction = ml_prediction
-                    final_confidence = ml_confidence
-                    agent_logger.log_info(f"⚠ ML Override: TA={ta_prediction}, ML={ml_prediction} (conf={ml_confidence:.2f})")
+                # Get ML prediction as fallback
+                ml_prediction, ml_confidence = self.ml_predictor.predict(market_data)
+                
+                # Convert strategy prediction to UP/DOWN
+                if strategy == 'higher_lower':
+                    ta_prediction = 'UP' if signal.contract_type == 'HIGHER' else 'DOWN'
+                elif strategy == 'rise_fall':
+                    ta_prediction = 'UP' if signal.contract_type == 'RISE' else 'DOWN'
                 else:
-                    # Disagreement with low ML confidence - reduce confidence
-                    final_confidence = confidence * 0.7
-                    agent_logger.log_info(f"✗ Disagreement: TA={ta_prediction}, ML={ml_prediction} → Confidence reduced to {final_confidence:.2f}")
+                    ta_prediction = 'UP'  # Default for accumulator
+                
+                final_prediction = ta_prediction
+                final_confidence = confidence
+                
+                if self.ml_predictor.is_trained:
+                    if ml_prediction == ta_prediction:
+                        # Both agree - boost confidence
+                        final_confidence = min(confidence + ml_confidence * 0.3, 1.0)
+                        agent_logger.log_info(f"✓ Agreement: TA={ta_prediction}, ML={ml_prediction} → Confidence boosted to {final_confidence:.2f}")
+                    elif ml_confidence > 0.75:
+                        # ML very confident, override TA
+                        final_prediction = ml_prediction
+                        final_confidence = ml_confidence
+                        agent_logger.log_info(f"⚠ ML Override: TA={ta_prediction}, ML={ml_prediction} (conf={ml_confidence:.2f})")
+                    else:
+                        # Disagreement with low ML confidence - reduce confidence
+                        final_confidence = confidence * 0.7
+                        agent_logger.log_info(f"✗ Disagreement: TA={ta_prediction}, ML={ml_prediction} → Confidence reduced to {final_confidence:.2f}")
             
             # Check if confidence still meets threshold
             if final_confidence < MIN_CONFIDENCE:
@@ -532,12 +869,33 @@ class IntelligentTradingAgent:
                 contract_type = 'CALL'
                 display_prediction = 'UP'
             
+            # Get current market conditions for logging
+            current_price = market_data['features'].get('price_current', 0)
+            rsi = market_data['features'].get('rsi', 50)
+            macd = market_data['features'].get('macd_histogram', 0)
+            bb_position = market_data['features'].get('bb_position', 0.5)
+            
+            # Log comprehensive trade information
+            agent_logger.log_info("=" * 80)
+            agent_logger.log_info(f"🎯 PLACING TRADE #{self.total_trades + 1}")
+            agent_logger.log_info("=" * 80)
+            agent_logger.log_info(f"Strategy: {strategy} | Direction: {final_prediction} ({display_prediction})")
+            agent_logger.log_info(f"Confidence: {final_confidence:.2%} | Position Size: ${position_size:.2f}")
+            agent_logger.log_info(f"Market: {self.symbol} | State: {self.current_market_state} | Health: {self.market_health:.1f}")
+            agent_logger.log_info(f"Price: {current_price:.5f} | RSI: {rsi:.1f} | MACD: {macd:.5f} | BB: {bb_position:.2f}")
+            agent_logger.log_info(f"ML Training Acc: {ml_stats['model_accuracy']:.2%} | Live Acc: {ml_stats.get('live_accuracy', 0):.2%}")
+            agent_logger.log_info(f"ML Samples: {ml_stats['training_samples']} | Predictions: {ml_stats['predictions_made']}")
+            agent_logger.log_info(f"Win/Loss Record: {self.win_count}W / {self.loss_count}L ({self.win_count/(self.win_count+self.loss_count)*100 if (self.win_count+self.loss_count) > 0 else 0:.1f}%)")
+            agent_logger.log_info(f"Consecutive Losses: {self.consecutive_losses}")
+            agent_logger.log_info("=" * 80)
+            
             # Log trade execution
             agent_logger.log_decision({
                 'action': 'execute_trade',
                 'strategy': strategy,
-                'ta_prediction': ta_prediction,
-                'ml_prediction': ml_prediction,
+                'ensemble_direction': ensemble_direction,
+                'ta_prediction': ta_prediction if ta_prediction else 'N/A',
+                'ml_prediction': ml_prediction if ml_prediction != 'HOLD' else 'N/A',
                 'ml_confidence': ml_confidence,
                 'final_prediction': final_prediction,
                 'contract_type': contract_type,
@@ -574,6 +932,7 @@ class IntelligentTradingAgent:
                 temp_key = f"pending_{self.total_trades}"
                 self.active_contracts[temp_key] = {
                     'strategy': strategy,
+                    'symbol': self.symbol,  # Track which symbol this trade is on
                     'contract_type': contract_type,
                     'prediction': display_prediction,
                     'ml_prediction': ml_prediction,
@@ -630,7 +989,7 @@ class IntelligentTradingAgent:
                 market_data_dict[symbol] = {
                     'features': features,
                     'price': features.get('price_current', 0),
-                    'timestamp': datetime.now(),
+                    'timestamp': datetime.now().isoformat(),
                     'symbol': symbol
                 }
             
@@ -652,6 +1011,90 @@ class IntelligentTradingAgent:
         except Exception as e:
             agent_logger.log_warning(f"Error finding best market opportunity: {e}")
             return None
+    
+    def _calculate_current_market_score(self) -> float:
+        """Calculate score for current market."""
+        try:
+            regime = self.current_market_analyzer.get_market_regime()
+            health = regime['health']
+            
+            # Get current strategy confidence
+            features = self.current_market_analyzer.feature_engine.extract_features()
+            market_data = {
+                'features': features,
+                'price': features.get('price_current', 0),
+                'timestamp': datetime.now().isoformat(),
+                'symbol': self.symbol
+            }
+            strategy, confidence = self.strategy_selector.select_strategy(market_data)
+            
+            # Calculate score (same formula as MarketOpportunity)
+            score = 50.0
+            score += confidence * 20
+            score += (health / 100) * 20
+            
+            # Pattern bonus
+            patterns = self.pattern_recognizer.detect_all_patterns()
+            if patterns:
+                score += min(len(patterns) * 5, 10)
+            
+            return min(score, 100.0)
+        except Exception as e:
+            agent_logger.log_warning(f"Error calculating current market score: {e}")
+            return 50.0
+    
+    def _log_multi_market_status(self):
+        """Log status of all monitored markets."""
+        try:
+            market_status = self.multi_market_monitor.get_market_status()
+            opportunities = self.multi_market_monitor.current_opportunities
+            
+            agent_logger.log_info("=" * 80)
+            agent_logger.log_info(f"📊 MULTI-MARKET STATUS (Tick {self.tick_count})")
+            agent_logger.log_info("=" * 80)
+            
+            # Sort by opportunity score
+            sorted_markets = sorted(
+                market_status.items(),
+                key=lambda x: x[1].get('opportunity_score', 0),
+                reverse=True
+            )
+            
+            for symbol, status in sorted_markets:
+                is_current = "🎯" if symbol == self.symbol else "  "
+                has_opp = "✓" if status['has_opportunity'] else "✗"
+                
+                patterns_str = ", ".join(status['patterns'][:3]) if status['patterns'] else "none"
+                if len(status['patterns']) > 3:
+                    patterns_str += f" +{len(status['patterns'])-3} more"
+                
+                agent_logger.log_info(
+                    f"{is_current} {symbol:8} | "
+                    f"Score: {status['opportunity_score']:5.1f} | "
+                    f"Health: {status['health']:5.1f} | "
+                    f"State: {status['market_state']:15} | "
+                    f"Strategy: {status['opportunity_strategy']:12} | "
+                    f"Opp: {has_opp} | "
+                    f"Patterns: {patterns_str}"
+                )
+            
+            agent_logger.log_info("=" * 80)
+            
+            # Show performance stats
+            performance = self.multi_market_monitor.get_all_performance()
+            if any(p['trades'] > 0 for p in performance.values()):
+                agent_logger.log_info("📈 PERFORMANCE BY MARKET:")
+                for symbol, perf in performance.items():
+                    if perf['trades'] > 0:
+                        agent_logger.log_info(
+                            f"  {symbol}: {perf['wins']}W/{perf['losses']}L "
+                            f"({perf['win_rate']:.1%}) | "
+                            f"Profit: ${perf['profit']:.2f}"
+                        )
+                agent_logger.log_info("=" * 80)
+            
+        except Exception as e:
+            agent_logger.log_warning(f"Error logging multi-market status: {e}")
     
     def _log_status(self):
         """Log agent status."""

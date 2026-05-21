@@ -49,6 +49,7 @@ class StrategySelector:
             }
         
         self.current_market_state = None
+        self._last_logged_state = None  # Track last logged state to reduce spam
         self.strategy_switch_cooldown = 0
     
     def update_market_data(self, price: float, volume: float = 1.0):
@@ -58,9 +59,8 @@ class StrategySelector:
             self.strategy_switch_cooldown -= 1
     
     def get_market_state(self) -> str:
-        """Get current market state."""
-        if not self.current_market_state:
-            self.current_market_state = self.market_analyzer.detect_market_state()
+        """Get current market state — always recalculated fresh each call."""
+        self.current_market_state = self.market_analyzer.detect_market_state()
         return self.current_market_state
     
     def select_strategy(self, market_data: Dict) -> Tuple[str, float]:
@@ -71,9 +71,13 @@ class StrategySelector:
         market_state = self.get_market_state()
         regime = self.market_analyzer.get_market_regime()
         
-        agent_logger.log_info(
-            f"Market state: {market_state}, Health: {regime['health']:.1f}"
-        )
+        # Only log when the market state changes (avoid per-tick spam)
+        if market_state != self._last_logged_state:
+            agent_logger.log_info(
+                f"📈 Market state changed: {self._last_logged_state} → {market_state} "
+                f"| Health: {regime['health']:.1f}"
+            )
+            self._last_logged_state = market_state
         
         # Get recommendations from market analyzer
         recommendation = self.market_analyzer.get_strategy_recommendation()
