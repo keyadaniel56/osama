@@ -318,31 +318,43 @@ class IntelligentTradingAgent:
                                     self.multi_market_monitor.update_market(sym, sym_latest_price, volume=1.0)
                 
                 # Step 3: Periodically scan and switch to best market
+                # CRITICAL: Don't switch markets if Martingale recovery is active
+                # Must stay on same market to recover losses with doubled stakes
                 if self.tick_count % 25 == 0 and self.monitoring_multiple_markets:
                     # Log current tick counts for all symbols
                     if self.tick_count % 100 == 0:
                         tick_counts = {sym: len(self.client.get_tick_history(sym)) for sym in self.symbols}
                         agent_logger.log_info(f"📊 Tick counts by symbol: {tick_counts}")
                     
-                    best_opportunity = self._find_best_market_opportunity()
-                    if best_opportunity and best_opportunity.symbol != self.symbol:
-                        # Check if new market is significantly better (score difference > 10)
-                        current_score = self._calculate_current_market_score()
-                        if best_opportunity.score > current_score + 10:
-                            agent_logger.log_info(
-                                f"🔄 Switching markets: {self.symbol} (score={current_score:.1f}) → "
-                                f"{best_opportunity.symbol} (score={best_opportunity.score:.1f})"
+                    # Check if Martingale recovery is active
+                    if self.risk_manager.martingale_step > 0:
+                        if self.tick_count % 50 == 0:
+                            agent_logger.log_warning(
+                                f"🔒 Market LOCKED on {self.symbol} - Martingale recovery active "
+                                f"(step {self.risk_manager.martingale_step}/{self.risk_manager.max_martingale_steps}) "
+                                f"- Will NOT switch until recovery complete"
                             )
-                            self.symbol = best_opportunity.symbol
-                            self.current_market_analyzer = self.market_analyzers[self.symbol]
-                            self.pattern_recognizer = ChartPatternRecognizer(window=100)
-                            self.client.symbol = self.symbol
-                            agent_logger.log_info(
-                                f"📊 New market: {best_opportunity.symbol} | "
-                                f"State: {best_opportunity.market_state} | "
-                                f"Strategy: {best_opportunity.strategy} | "
-                                f"Confidence: {best_opportunity.confidence:.2f}"
-                            )
+                    else:
+                        # Only scan for new markets if NOT in Martingale recovery
+                        best_opportunity = self._find_best_market_opportunity()
+                        if best_opportunity and best_opportunity.symbol != self.symbol:
+                            # Check if new market is significantly better (score difference > 10)
+                            current_score = self._calculate_current_market_score()
+                            if best_opportunity.score > current_score + 10:
+                                agent_logger.log_info(
+                                    f"🔄 Switching markets: {self.symbol} (score={current_score:.1f}) → "
+                                    f"{best_opportunity.symbol} (score={best_opportunity.score:.1f})"
+                                )
+                                self.symbol = best_opportunity.symbol
+                                self.current_market_analyzer = self.market_analyzers[self.symbol]
+                                self.pattern_recognizer = ChartPatternRecognizer(window=100)
+                                self.client.symbol = self.symbol
+                                agent_logger.log_info(
+                                    f"📊 New market: {best_opportunity.symbol} | "
+                                    f"State: {best_opportunity.market_state} | "
+                                    f"Strategy: {best_opportunity.strategy} | "
+                                    f"Confidence: {best_opportunity.confidence:.2f}"
+                                )
                 
                 # Step 3.5: Log multi-market status periodically
                 if self.tick_count % 100 == 0 and self.monitoring_multiple_markets:

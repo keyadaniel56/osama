@@ -128,6 +128,10 @@ class RiskManager:
                     f"✓ Martingale WIN! Recovered from {self.martingale_step} losses. "
                     f"Resetting to base stake ${self.base_stake}"
                 )
+                agent_logger.log_info(
+                    f"🔓 MARKET UNLOCK - Martingale recovery complete! "
+                    f"Agent can now switch to better markets if available."
+                )
             
             self.martingale_step = 0  # Reset martingale on win
             
@@ -143,6 +147,9 @@ class RiskManager:
                     f"✗ Loss #{self.consecutive_losses}. "
                     f"Martingale step {self.martingale_step}/{self.max_martingale_steps}. "
                     f"Next stake: ${next_stake:.2f}"
+                )
+                agent_logger.log_warning(
+                    f"🔒 MARKET LOCKED - Must stay on same market to recover losses with Martingale strategy"
                 )
             else:
                 if self.martingale_step >= self.max_martingale_steps:

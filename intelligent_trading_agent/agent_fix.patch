@@ -1,0 +1,24 @@
+--- a/agent.py
++++ b/agent.py
+@@ -210,12 +210,15 @@ class IntelligentTradingAgent:
+                 # Step 7: Check if market state is known (don't trade on unknown conditions)
+                 if self.current_market_state == "unknown":
+                     agent_logger.log_warning(f"Skipping trade - market state is unknown (insufficient data)")
+                     time.sleep(0.05)
+                     continue
+                 
++                # Step 7.25: First trade needs minimum 100 ticks of data
++                if self.total_trades == 0 and self.tick_count < 100:
++                    if self.tick_count % 50 == 0:
++                        agent_logger.log_info(f"Waiting for data before first trade ({self.tick_count}/100 ticks)")
++                    time.sleep(0.05)
++                    continue
+-                # Step 7.5: Require more data before first trade (quality check)
+-                # Don't trade immediately at tick 50 - wait for more confirmation
+-                if self.tick_count < 100 and self.total_trades == 0:
+-                    if self.tick_count % 50 == 0:
+-                        agent_logger.log_info(f"Collecting more data before first trade ({self.tick_count}/100 ticks)")
+-                    time.sleep(0.05)
+-                    continue
+ 
+                 # Step 8: Check risk constraints
