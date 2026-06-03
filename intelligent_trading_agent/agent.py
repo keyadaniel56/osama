@@ -318,16 +318,25 @@ class IntelligentTradingAgent:
                                     self.multi_market_monitor.update_market(sym, sym_latest_price, volume=1.0)
                 
                 # Step 3: Periodically scan and switch to best market
-                # CRITICAL: Don't switch markets if Martingale recovery is active
-                # Must stay on same market to recover losses with doubled stakes
+                # CRITICAL: Don't switch markets if:
+                # 1. Martingale recovery is active (must recover on same market)
+                # 2. There's an active contract open (wait for it to close first)
                 if self.tick_count % 25 == 0 and self.monitoring_multiple_markets:
                     # Log current tick counts for all symbols
                     if self.tick_count % 100 == 0:
                         tick_counts = {sym: len(self.client.get_tick_history(sym)) for sym in self.symbols}
                         agent_logger.log_info(f"📊 Tick counts by symbol: {tick_counts}")
                     
+                    # Check if there's an active contract - DON'T switch while trade is open
+                    if len(self.active_contracts) > 0:
+                        if self.tick_count % 50 == 0:
+                            contract_ids = list(self.active_contracts.keys())
+                            agent_logger.log_warning(
+                                f"🔒 Market LOCKED on {self.symbol} - Active contract open "
+                                f"({contract_ids}) - Will NOT switch until contract closes"
+                            )
                     # Check if Martingale recovery is active
-                    if self.risk_manager.martingale_step > 0:
+                    elif self.risk_manager.martingale_step > 0:
                         if self.tick_count % 50 == 0:
                             agent_logger.log_warning(
                                 f"🔒 Market LOCKED on {self.symbol} - Martingale recovery active "
