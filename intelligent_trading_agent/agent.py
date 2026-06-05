@@ -444,31 +444,47 @@ class IntelligentTradingAgent:
                 bb_position = indicators.get('bb_position', 0.5)
                 
                 # Block trading if indicators are at dangerous extremes
-                # RSI 0-5 = extremely oversold (market falling hard)
-                # RSI 95-100 = extremely overbought (market rising hard)
-                if rsi >= 95:
+                # Tightened thresholds to avoid false breakout signals
+                # RSI 0-25 = oversold (likely to bounce down before going up)
+                # RSI 75-100 = overbought (likely to bounce up before going down)
+                if rsi >= 75:
                     if self.tick_count % 100 == 0:
                         agent_logger.log_warning(
-                            f"⚠️ EXTREME OVERBOUGHT: RSI={rsi:.1f} - Waiting for reversal or stabilization"
+                            f"⚠️ OVERBOUGHT: RSI={rsi:.1f} - Waiting for stabilization (threshold: 75)"
                         )
                     time.sleep(0.05)
                     continue
                 
-                if rsi <= 5:
+                if rsi <= 25:
                     if self.tick_count % 100 == 0:
                         agent_logger.log_warning(
-                            f"⚠️ EXTREME OVERSOLD: RSI={rsi:.1f} - Waiting for reversal or stabilization"
+                            f"⚠️ OVERSOLD: RSI={rsi:.1f} - Waiting for stabilization (threshold: 25)"
                         )
                     time.sleep(0.05)
                     continue
                 
-                if bb_position >= 1.05 or bb_position <= -0.05:
+                # Tightened BB threshold - price at bands means mean reversion likely
+                if bb_position >= 0.9 or bb_position <= 0.1:
                     if self.tick_count % 100 == 0:
                         agent_logger.log_warning(
-                            f"⚠️ EXTREME BB position: {bb_position:.2f} - Price at extreme band, waiting for mean reversion"
+                            f"⚠️ EXTREME BB position: {bb_position:.2f} - Price near band edge, waiting for mean reversion"
                         )
                     time.sleep(0.05)
                     continue
+                
+                # PATTERN CONTRADICTION CHECK: Don't trade if bullish and bearish patterns coexist
+                if pattern_data and 'patterns' in pattern_data:
+                    bullish_count = sum(1 for p in pattern_data['patterns'].values() if p['type'] == 'bullish')
+                    bearish_count = sum(1 for p in pattern_data['patterns'].values() if p['type'] == 'bearish')
+                    
+                    if bullish_count > 0 and bearish_count > 0:
+                        if self.tick_count % 100 == 0:
+                            agent_logger.log_warning(
+                                f"⚠️ CONTRADICTORY PATTERNS: {bullish_count} bullish + {bearish_count} bearish patterns detected - "
+                                f"No clear directional signal, waiting for clarity"
+                            )
+                        time.sleep(0.05)
+                        continue
                 
                 trade_direction, ensemble_confidence = self.decision_engine.make_decision(
                     ml_prediction=ml_prediction,

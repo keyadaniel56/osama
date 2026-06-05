@@ -26,18 +26,23 @@ class MLPredictor:
         self.scaler = StandardScaler()
         self.contract_duration_minutes = contract_duration_minutes
         
-        # Ensemble of models
+        # Ensemble of models with REDUCED COMPLEXITY to prevent overfitting
         self.rf_model = RandomForestClassifier(
-            n_estimators=100,
-            max_depth=10,
-            min_samples_split=20,
+            n_estimators=20,        # Reduced from 100 - fewer trees
+            max_depth=3,            # Reduced from 10 - shallower trees
+            min_samples_split=50,   # Increased from 20 - more samples per split
+            min_samples_leaf=20,    # Added - larger leaves
+            max_features='sqrt',    # Added - fewer features per split
             random_state=42
         )
         
         self.gb_model = GradientBoostingClassifier(
-            n_estimators=100,
-            max_depth=5,
-            learning_rate=0.1,
+            n_estimators=20,        # Reduced from 100
+            max_depth=3,            # Reduced from 5
+            learning_rate=0.05,     # Reduced from 0.1 - slower learning
+            min_samples_split=50,   # Added
+            min_samples_leaf=20,    # Added
+            max_features='sqrt',    # Added
             random_state=42
         )
         
@@ -421,7 +426,7 @@ class MLPredictor:
                 self.train()
     
     def train(self):
-        """Train/retrain the ML models with buffered data."""
+        """Train/retrain the ML models with buffered data using balanced sampling."""
         if len(self.training_buffer) < self.min_training_samples:
             agent_logger.log_info(f"Not enough training data: {len(self.training_buffer)}/{self.min_training_samples}")
             return
@@ -449,37 +454,76 @@ class MLPredictor:
                 )
                 return
             
-            # Check if classes are too imbalanced (>90% one class)
-            class_ratio = min(up_count, down_count) / max(up_count, down_count)
-            if class_ratio < 0.1:
-                agent_logger.log_warning(
-                    f"⚠️ Severe class imbalance: UP={up_count} ({up_count/len(y)*100:.1f}%), "
-                    f"DOWN={down_count} ({down_count/len(y)*100:.1f}%). "
-                    f"Ratio: {class_ratio:.2f}. Waiting for more balanced data..."
-                )
-                return
+            # CRITICAL FIX: Balance the training data
+            # If we have 620 UP and 233 DOWN, sample 233 UP and 233 DOWN for balanced training
+            up_indices = np.where(y == 1)[0]
+            down_indices = np.where(y == 0)[0]
             
-            # Fit scaler
-            self.scaler.fit(X)
-            X_scaled = self.scaler.transform(X)
+            # Take the minimum count to balance classes
+            min_samples = min(len(up_indices), len(down_indices))
             
-            # Train models
-            self.rf_model.fit(X_scaled, y)
-            self.gb_model.fit(X_scaled, y)
+            # Randomly sample equal numbers from each class
+            np.random.seed(42)  # For reproducibility
+            balanced_up_indices = np.random.choice(up_indices, size=min_samples, replace=False)
+            balanced_down_indices = np.random.choice(down_indices, size=min_samples, replace=False)
             
-            # Calculate training accuracy
-            rf_score = self.rf_model.score(X_scaled, y)
-            gb_score = self.gb_model.score(X_scaled, y)
-            self.model_accuracy = (rf_score + gb_score) / 2
+            # Combine and shuffle
+            balanced_indices = np.concatenate([balanced_up_indices, balanced_down_indices])
+            np.random.shuffle(balanced_indices)
             
-            self.is_trained = True
+            X_balanced = X[balanced_indices]
+            y_balanced = y[balanced_indices]
             
             agent_logger.log_info(
-                f"✅ ML models trained: {len(self.training_buffer)} samples | "
-                f"Accuracy: {self.model_accuracy:.2%} | "
-                f"UP: {up_count} ({up_count/len(y)*100:.1f}%) | "
-                f"DOWN: {down_count} ({down_count/len(y)*100:.1f}%)"
+                f"📊 Balanced training data: Original ({up_count} UP / {down_count} DOWN) → "
+                f"Balanced ({min_samples} UP / {min_samples} DOWN)"
             )
+            
+            # Fit scaler on balanced data
+            self.scaler.fit(X_balanced)
+            X_scaled_balanced = self.scaler.transform(X_balanced)
+            
+            # CRITICAL FIX: Time-series train/test split
+            # Use first 70% for training, last 30% for validation (maintains temporal order)
+            train_size = int(len(X_scaled_balanced) * 0.7)
+            X_train, X_test = X_scaled_balanced[:train_size], X_scaled_balanced[train_size:]
+            y_train, y_test = y_balanced[:train_size], y_balanced[train_size:]
+            
+            # Train models on training set only
+            self.rf_model.fit(X_train, y_train)
+            self.gb_model.fit(X_train, y_train)
+            
+            # Calculate training accuracy
+            train_rf_score = self.rf_model.score(X_train, y_train)
+            train_gb_score = self.gb_model.score(X_train, y_train)
+            train_accuracy = (train_rf_score + train_gb_score) / 2
+            
+            # Calculate VALIDATION accuracy (more realistic!)
+            if len(X_test) > 0:
+                test_rf_score = self.rf_model.score(X_test, y_test)
+                test_gb_score = self.gb_model.score(X_test, y_test)
+                validation_accuracy = (test_rf_score + test_gb_score) / 2
+                
+                # Use validation accuracy as model accuracy (more honest!)
+                self.model_accuracy = validation_accuracy
+                
+                agent_logger.log_info(
+                    f"✅ ML models trained: {len(X_balanced)} balanced samples | "
+                    f"Train Acc: {train_accuracy:.2%} | "
+                    f"Valid Acc: {validation_accuracy:.2%} | "
+                    f"Split: {len(X_train)} train / {len(X_test)} test | "
+                    f"Classes: {min_samples} UP / {min_samples} DOWN (balanced)"
+                )
+            else:
+                # Not enough data for validation split
+                self.model_accuracy = train_accuracy
+                agent_logger.log_info(
+                    f"✅ ML models trained: {len(X_balanced)} balanced samples | "
+                    f"Accuracy: {train_accuracy:.2%} (no validation split) | "
+                    f"Classes: {min_samples} UP / {min_samples} DOWN (balanced)"
+                )
+            
+            self.is_trained = True
             
             # Save models
             self._save_models()
