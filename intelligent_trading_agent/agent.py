@@ -837,6 +837,21 @@ class IntelligentTradingAgent:
     
     def _cleanup_stuck_contracts(self):
         """Clean up contracts that have been open for too long (tick-based)."""
+        # Calculate expected ticks based on actual contract duration
+        # Convert duration to expected ticks (1 tick/sec roughly)
+        if CONTRACT_DURATION_UNIT == 'm':
+            expected_ticks = CONTRACT_DURATION * 60  # minutes to seconds
+        elif CONTRACT_DURATION_UNIT == 's':
+            expected_ticks = CONTRACT_DURATION
+        elif CONTRACT_DURATION_UNIT == 'h':
+            expected_ticks = CONTRACT_DURATION * 3600
+        elif CONTRACT_DURATION_UNIT == 't':
+            expected_ticks = CONTRACT_DURATION
+        else:
+            expected_ticks = 300  # default 5 min
+        
+        stuck_threshold_ticks = int(expected_ticks * 1.5)  # 50% buffer over expected
+        
         for key, trade in list(self.active_contracts.items()):
             tick_opened = trade.get('tick_opened', self.tick_count)
             ticks_open = self.tick_count - tick_opened
@@ -855,13 +870,12 @@ class IntelligentTradingAgent:
                 continue
             
             # For confirmed contracts (have real contract_id):
-            # 5-minute contract should close in ~300 ticks (at 1 tick/sec)
-            # If open for 450+ ticks (7.5 minutes), it's definitely stuck
-            # (give some buffer for tick rate variation)
-            if ticks_open > 450:
+            # Use actual contract duration to determine stuck threshold
+            if ticks_open > stuck_threshold_ticks:
                 agent_logger.log_warning(
                     f"⚠️ Stuck contract detected: {key} open for {ticks_open} ticks "
-                    f"(expected ~300). Removing from active list."
+                    f"(expected ~{expected_ticks}, threshold={stuck_threshold_ticks}). "
+                    f"Removing from active list."
                 )
                 del self.active_contracts[key]
     
@@ -869,8 +883,22 @@ class IntelligentTradingAgent:
         """
         Time-based stuck contract cleanup.
         This runs even when ticks aren't flowing (e.g., after WebSocket disconnect).
-        Uses real wall-clock time instead of tick count.
+        Uses real wall-clock time and actual contract duration.
         """
+        # Calculate expected seconds based on actual contract duration
+        if CONTRACT_DURATION_UNIT == 'm':
+            expected_seconds = CONTRACT_DURATION * 60
+        elif CONTRACT_DURATION_UNIT == 's':
+            expected_seconds = CONTRACT_DURATION
+        elif CONTRACT_DURATION_UNIT == 'h':
+            expected_seconds = CONTRACT_DURATION * 3600
+        elif CONTRACT_DURATION_UNIT == 't':
+            expected_seconds = CONTRACT_DURATION * 5  # ~5 sec per tick
+        else:
+            expected_seconds = 300  # default 5 min
+        
+        stuck_threshold_seconds = expected_seconds * 2  # 100% buffer (extra generous for time-based)
+        
         current_time = time.time()
         for key, trade in list(self.active_contracts.items()):
             # Skip pending contracts (handled by tick-based cleanup)
@@ -887,13 +915,11 @@ class IntelligentTradingAgent:
                 opened_time = datetime.fromisoformat(trade_timestamp).timestamp()
                 elapsed_seconds = current_time - opened_time
                 
-                # 5-minute contract should close in ~5 minutes (300 seconds)
-                # If open for 7+ minutes (420 seconds), it's stuck
-                # (give 2-minute buffer for WebSocket latency/processing delays)
-                if elapsed_seconds > 420:
+                if elapsed_seconds > stuck_threshold_seconds:
                     agent_logger.log_warning(
                         f"⚠️ Stuck contract detected (time-based): {key} open for {elapsed_seconds:.0f}s "
-                        f"(expected ~300s). Removing from active list."
+                        f"(expected ~{expected_seconds}s, threshold={stuck_threshold_seconds}s). "
+                        f"Removing from active list."
                     )
                     del self.active_contracts[key]
             except (ValueError, TypeError) as e:
