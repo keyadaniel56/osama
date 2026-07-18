@@ -25,6 +25,7 @@ from ml_predictor import MLPredictor
 from multi_market_monitor import MultiMarketMonitor
 from features.pattern_recognition import ChartPatternRecognizer
 from decision_engine import DecisionEngine, RiskAdjustedDecision
+from terminal_ui import TerminalUI
 from config import (
     DERIV_API_TOKEN, DERIV_APP_ID, DEFAULT_SYMBOL,
     BASE_STAKE, MAX_DAILY_LOSS, MAX_CONSEC_LOSSES,
@@ -76,6 +77,9 @@ class IntelligentTradingAgent:
         # Initialize Deriv client
         self.client = None
         self.latest_price = None
+        
+        # Initialize Terminal UI
+        self.terminal_ui = TerminalUI()
         
         # State tracking
         self.running = False
@@ -145,6 +149,9 @@ class IntelligentTradingAgent:
         # Load models from disk if they exist
         self._load_models()
         
+        # Start Terminal UI
+        self.terminal_ui.start()
+        
         # Initialize connection to Deriv
         self._initialize_connection()
         
@@ -155,6 +162,9 @@ class IntelligentTradingAgent:
         """Stop the trading agent."""
         self.running = False
         agent_logger.log_info("Stopping trading agent...")
+        
+        # Stop Terminal UI
+        self.terminal_ui.stop()
         
         # Disconnect from Deriv
         if self.client:
@@ -200,6 +210,10 @@ class IntelligentTradingAgent:
                 if loop_iterations % 5 == 0:
                     self._update_dashboard_state()
                     self._process_dashboard_commands()
+                
+                # Update Terminal UI with latest data
+                if loop_iterations % 2 == 0:
+                    self._update_terminal_ui()
                 
                 # Log heartbeat every 1000 iterations to show loop is running
                 if loop_iterations % 1000 == 0:
@@ -1681,6 +1695,80 @@ class IntelligentTradingAgent:
         """
         
         agent_logger.log_info(status)
+    
+    def _update_terminal_ui(self):
+        """Update the terminal UI with latest agent data."""
+        try:
+            ml_stats = self.ml_predictor.get_stats() if hasattr(self, 'ml_predictor') else {}
+            risk_metrics = self.risk_manager.get_risk_metrics() if hasattr(self, 'risk_manager') else {}
+            
+            # Get pattern names
+            pattern_names = list(self.current_patterns.keys()) if self.current_patterns else []
+            
+            # Build signals dict for UI
+            signals_ui = {}
+            for sig_type in ['ml', 'pattern', 'indicator']:
+                sig = self.current_signals.get(sig_type)
+                if sig:
+                    if isinstance(sig, dict):
+                        signals_ui[sig_type] = sig
+                    elif isinstance(sig, (int, float)):
+                        signals_ui[sig_type] = {'direction': 'up' if sig > 0 else 'down', 'confidence': abs(sig)}
+            
+            # Get multi-tf trend
+            multi_tf = None
+            if hasattr(self, 'pattern_recognizer') and hasattr(self.pattern_recognizer, 'multi_tf_analyzer'):
+                tf = self.pattern_recognizer.multi_tf_analyzer.get_aligned_trend()
+                if tf.get('is_trending'):
+                    multi_tf = tf
+            
+            ui_data = {
+                'agent_id': self.agent_id,
+                'symbol': self.symbol,
+                'connected': self.client.connected if self.client else False,
+                'authorized': self.client.authorized if self.client else False,
+                'tick_count': self.tick_count,
+                'total_trades': self.total_trades,
+                'win_count': self.win_count,
+                'loss_count': self.loss_count,
+                'daily_profit': self.daily_profit,
+                'daily_loss': self.daily_loss,
+                'session_profit': risk_metrics.get('session_profit', 0),
+                'peak_profit': risk_metrics.get('peak_profit', 0),
+                'consecutive_losses': self.consecutive_losses,
+                'global_consecutive_losses': risk_metrics.get('global_consecutive_losses', 0),
+                'market_state': self.current_market_state,
+                'market_health': self.market_health,
+                'current_strategy': self.current_strategy or 'N/A',
+                'confidence': self.confidence,
+                'ensemble_confidence': self.ensemble_confidence,
+                'trade_direction': self.trade_direction,
+                'current_stake': risk_metrics.get('current_stake', 0),
+                'base_stake': risk_metrics.get('base_stake', 0.35),
+                'martingale_step': risk_metrics.get('martingale_step', 0),
+                'use_martingale': risk_metrics.get('use_martingale', False),
+                'trading_paused': self.risk_manager.trading_paused if hasattr(self, 'risk_manager') else False,
+                'pause_reason': getattr(self.risk_manager, 'pause_reason', ''),
+                'drawdown': risk_metrics.get('drawdown', 0),
+                'bankroll': risk_metrics.get('bankroll', 0),
+                'kelly_fraction': risk_metrics.get('kelly_fraction', 0),
+                'recent_win_rate': risk_metrics.get('recent_win_rate', 0),
+                'adaptive_threshold': risk_metrics.get('adaptive_confidence_threshold', 0),
+                'trailing_stop_active': risk_metrics.get('trailing_stop_active', False),
+                'active_contracts': self.active_contracts,
+                'signals': signals_ui,
+                'patterns': pattern_names,
+                'multi_tf_trend': multi_tf,
+                'recent_trades': self.session_trades[-10:] if self.session_trades else [],
+                'ml_accuracy': ml_stats.get('model_accuracy', 0),
+                'ml_live_accuracy': ml_stats.get('live_accuracy', 0),
+                'ml_samples': ml_stats.get('training_samples', 0),
+                'latest_price': self.latest_price,
+                'last_update': datetime.now().strftime('%H:%M:%S'),
+            }
+            self.terminal_ui.update(ui_data)
+        except Exception:
+            pass  # Silently handle UI update errors
     
     def _load_models(self):
         """Load persisted models from disk."""
