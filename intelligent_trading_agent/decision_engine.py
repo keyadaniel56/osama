@@ -1,6 +1,7 @@
 """
 Unified decision engine that combines ML predictions + pattern recognition + technical indicators.
 Uses ensemble approach for robust trade signals.
+Prioritizes multi-timeframe trend analysis as the primary signal source.
 """
 
 from typing import Dict, Tuple, Optional
@@ -12,14 +13,22 @@ from config import MIN_CONFIDENCE
 class DecisionEngine:
     """
     Intelligent decision engine combining:
-    1. ML model predictions (primary)
-    2. Chart pattern recognition (secondary)
-    3. Technical indicators (tertiary)
+    1. Multi-timeframe trend analysis (PRIMARY - highest weight)
+    2. ML model predictions (secondary)
+    3. Chart pattern recognition (tertiary)
+    4. Technical indicators (quaternary)
+    
+    Decision flow:
+    1. Check higher timeframe trend FIRST - defines the bias
+    2. Check medium timeframe for confirmation
+    3. Only enter trades when higher AND medium timeframes agree
+    4. Use lower timeframe for entry timing
     """
     
     def __init__(self):
-        self.ml_weight = 0.6      # ML model confidence weight (increased for Rise/Fall)
-        self.pattern_weight = 0.25  # Pattern recognition weight
+        self.ml_weight = 0.20        # ML model confidence weight
+        self.trend_weight = 0.40     # Multi-timeframe trend weight (HIGHEST - primary)
+        self.pattern_weight = 0.25   # Pattern recognition weight (including candle)
         self.indicator_weight = 0.15 # Technical indicators weight
         
         # Thresholds for confidence
@@ -31,10 +40,17 @@ class DecisionEngine:
         patterns: Optional[Dict],
         indicators: Optional[Dict],
         market_state: str,
-        market_health: float
+        market_health: float,
+        multi_tf_trend: Optional[Dict] = None
     ) -> Tuple[Optional[str], float]:
         """
         Make trading decision using ensemble of signals.
+        
+        KEY RULES:
+        - Multi-timeframe trend is PRIMARY - only trade if higher+medium agree
+        - In trending markets, all signals get a boost
+        - In ranging markets, require strong candle pattern or breakout signal
+        - Never trade against the higher timeframe trend
         
         Returns:
             (direction: 'up'/'down' or None, confidence: 0-1)
@@ -43,21 +59,33 @@ class DecisionEngine:
         signals = {}
         confidences = {}
         
-        # 1. ML MODEL SIGNAL (primary - 50% weight)
+        # 1. MULTI-TIMEFRAME TREND SIGNAL (PRIMARY - 40% weight)
+        if multi_tf_trend and multi_tf_trend.get('is_trending'):
+            tf_signal = self._process_trend_signal(multi_tf_trend)
+            if tf_signal:
+                signals['trend'] = tf_signal['direction']
+                confidences['trend'] = tf_signal['confidence']
+                agent_logger.log_info(
+                    f"📊 Multi-TF Trend: {tf_signal['direction'].upper()} "
+                    f"(strength={tf_signal['confidence']:.2f}, "
+                    f"all_aligned={tf_signal.get('all_aligned', False)})"
+                )
+        
+        # 2. ML MODEL SIGNAL (secondary - 20% weight)
         if ml_prediction:
             ml_signal = self._process_ml_signal(ml_prediction)
             if ml_signal:
                 signals['ml'] = ml_signal['direction']
                 confidences['ml'] = ml_signal['confidence']
         
-        # 2. PATTERN RECOGNITION SIGNAL (secondary - 30% weight)
+        # 3. PATTERN RECOGNITION SIGNAL (tertiary - 25% weight)
         if patterns:
             pattern_signal = self._process_pattern_signal(patterns)
             if pattern_signal:
                 signals['pattern'] = pattern_signal['direction']
                 confidences['pattern'] = pattern_signal['confidence']
         
-        # 3. TECHNICAL INDICATORS SIGNAL (tertiary - 20% weight)
+        # 4. TECHNICAL INDICATORS SIGNAL (quaternary - 15% weight)
         if indicators:
             indicator_signal = self._process_indicator_signal(indicators, market_state)
             if indicator_signal:
@@ -73,8 +101,58 @@ class DecisionEngine:
         if not signals:
             return None, 0.0
         
+        # === TREND-BASED GUARD ===
+        # If we have a multi-timeframe trend signal, it defines the bias.
+        # All other signals must agree with the trend direction.
+        has_trend_signal = 'trend' in signals
+        trend_direction = signals.get('trend')
+        
+        if has_trend_signal:
+            # Check if other signals conflict with the trend
+            conflicting_signals = []
+            agreeing_signals = []
+            
+            for sig_type in ['ml', 'pattern', 'indicator']:
+                if sig_type in signals:
+                    if signals[sig_type] == trend_direction:
+                        agreeing_signals.append(sig_type)
+                    else:
+                        conflicting_signals.append(sig_type)
+            
+            if conflicting_signals and not agreeing_signals:
+                # ALL other signals conflict with trend - this is suspicious
+                agent_logger.log_warning(
+                    f"⚠️ Trend ({trend_direction}) conflicts with ALL other signals "
+                    f"({', '.join(conflicting_signals)}). Reducing confidence."
+                )
+                # Still allow trade if trend is very strong, but with penalty
+                trend_conf = confidences.get('trend', 0.5)
+                if trend_conf < 0.7:
+                    return None, 0.0
+            elif conflicting_signals:
+                agent_logger.log_info(
+                    f"⚡ Trend ({trend_direction}) agreed by {len(agreeing_signals)} signals, "
+                    f"disagreed by {len(conflicting_signals)}"
+                )
+        
+        # === SINGLE SOURCE GUARD ===
+        single_source = len(signals) == 1
+        is_trending = 'trending' in market_state
+        
+        if single_source:
+            if is_trending:
+                agent_logger.log_info(
+                    f"⚡ Single-source signal ({list(signals.keys())[0]}) "
+                    f"in {market_state} market — allowing (trending market)"
+                )
+            else:
+                agent_logger.log_info(
+                    f"⚡ Single-source signal ({list(signals.keys())[0]}) "
+                    f"in {market_state} market — allowing with reduced confidence"
+                )
+        
         # Calculate ensemble confidence
-        ensemble_confidence = self._calculate_ensemble_confidence(signals, confidences)
+        ensemble_confidence = self._calculate_ensemble_confidence(signals, confidences, multi_tf_trend)
         
         # Determine direction (majority voting with confidence weighting)
         direction = self._determine_direction(signals, confidences)
@@ -82,7 +160,7 @@ class DecisionEngine:
         if direction and ensemble_confidence >= self.min_ensemble_confidence:
             # Log detailed breakdown
             signal_summary = []
-            for sig_type in ['ml', 'pattern', 'indicator']:
+            for sig_type in ['trend', 'ml', 'pattern', 'indicator']:
                 if sig_type in signals:
                     sig_dir = signals[sig_type].upper()
                     sig_conf = confidences[sig_type]
@@ -98,6 +176,40 @@ class DecisionEngine:
             return direction, ensemble_confidence
         
         return None, 0.0
+    
+    def _process_trend_signal(self, multi_tf_trend: Dict) -> Optional[Dict]:
+        """
+        Process multi-timeframe trend analysis into a signal.
+        The TREND is the PRIMARY signal - highest confidence.
+        """
+        primary_direction = multi_tf_trend.get('primary_direction')
+        strength = multi_tf_trend.get('strength', 0.0)
+        all_aligned = multi_tf_trend.get('all_timeframes_align', False)
+        higher_medium_agree = multi_tf_trend.get('higher_medium_agree', False)
+        
+        if not higher_medium_agree or primary_direction not in ('up', 'down'):
+            return None
+        
+        if primary_direction == 'up':
+            direction = 'up'
+        elif primary_direction == 'down':
+            direction = 'down'
+        else:
+            return None
+        
+        # Base confidence on trend strength + alignment bonus
+        base_confidence = strength
+        if all_aligned:
+            base_confidence = min(base_confidence * 1.3, 0.95)  # All timeframes aligned = very strong
+        
+        confidence = min(max(base_confidence, 0.5), 0.95)
+        
+        return {
+            'direction': direction,
+            'confidence': confidence,
+            'all_aligned': all_aligned,
+            'higher_medium_agree': higher_medium_agree
+        }
     
     def _process_ml_signal(self, ml_prediction: Dict) -> Optional[Dict]:
         """Process ML model prediction into signal."""
@@ -116,11 +228,19 @@ class DecisionEngine:
         return None
     
     def _process_pattern_signal(self, patterns: Dict) -> Optional[Dict]:
-        """Process chart patterns into signal."""
+        """
+        Process chart patterns into signal.
+        Prioritizes candlestick patterns and multi-timeframe trend patterns
+        over traditional chart patterns.
+        """
         if not patterns or not patterns.get('patterns'):
             return None
         
         detected_patterns = patterns['patterns']
+        
+        # Check for special high-confidence patterns first
+        candle_patterns = ['bullish_engulfing', 'bearish_engulfing', 'hammer', 
+                          'shooting_star', 'three_white_soldiers', 'three_black_crows']
         
         # Score patterns
         bullish_score = 0.0
@@ -131,14 +251,16 @@ class DecisionEngine:
             if not pattern_data:
                 continue
             
-            pattern_type = pattern_data.get('type')
+            pattern_type = pattern_data.get('type') or pattern_data.get('signal', '')
             confidence = pattern_data.get('confidence', 0.5)
             pattern_count += 1
             
             # Map patterns to direction
-            if pattern_type in ['bullish', 'upside_breakout', 'bullish_continuation']:
+            if pattern_type in ['bullish', 'upside_breakout', 'bullish_continuation',
+                                'bullish_reversal'] or 'bullish' in str(pattern_type):
                 bullish_score += confidence
-            elif pattern_type in ['bearish', 'downside_breakout', 'bearish_continuation']:
+            elif pattern_type in ['bearish', 'downside_breakout', 'bearish_continuation',
+                                  'bearish_reversal'] or 'bearish' in str(pattern_type):
                 bearish_score += confidence
             else:
                 # Neutral patterns add to confidence but don't bias
@@ -238,7 +360,7 @@ class DecisionEngine:
         
         return None
     
-    def _calculate_ensemble_confidence(self, signals: Dict, confidences: Dict) -> float:
+    def _calculate_ensemble_confidence(self, signals: Dict, confidences: Dict, multi_tf_trend: Optional[Dict] = None) -> float:
         """Calculate weighted ensemble confidence with dynamic adjustments."""
         if not signals:
             return 0.0
@@ -246,8 +368,9 @@ class DecisionEngine:
         weighted_confidence = 0.0
         total_weight = 0.0
         
-        # Weight each signal
+        # Weight each signal (trend gets highest weight)
         for signal_type, weight in [
+            ('trend', self.trend_weight),
             ('ml', self.ml_weight),
             ('pattern', self.pattern_weight),
             ('indicator', self.indicator_weight)
@@ -271,16 +394,22 @@ class DecisionEngine:
             if up_count == total_signals or down_count == total_signals:
                 # Perfect agreement - boost confidence
                 ensemble_conf = min(ensemble_conf * 1.2, 0.98)
-            elif total_signals == 3 and (up_count == 2 or down_count == 2):
-                # 2 out of 3 agree - slight boost
+            elif total_signals >= 3 and (up_count >= 2 or down_count >= 2):
+                # Majority agreement - slight boost
                 ensemble_conf = min(ensemble_conf * 1.05, 0.95)
             else:
-                # Disagreement - reduce confidence significantly
+                # Disagreement - reduce confidence
                 ensemble_conf = ensemble_conf * 0.7
         
         # Penalize if only one signal source (less reliable)
         if total_signals == 1:
             ensemble_conf = ensemble_conf * 0.85
+        
+        # Trend alignment bonus
+        if multi_tf_trend and multi_tf_trend.get('all_timeframes_align'):
+            ensemble_conf = min(ensemble_conf * 1.15, 0.98)
+        elif multi_tf_trend and multi_tf_trend.get('higher_medium_agree'):
+            ensemble_conf = min(ensemble_conf * 1.05, 0.95)
         
         return ensemble_conf
     
@@ -294,6 +423,7 @@ class DecisionEngine:
         down_votes = 0.0
         
         weights = {
+            'trend': self.trend_weight,
             'ml': self.ml_weight,
             'pattern': self.pattern_weight,
             'indicator': self.indicator_weight
@@ -334,6 +464,7 @@ class RiskAdjustedDecision:
         indicators,
         market_state,
         market_health,
+        multi_tf_trend: Optional[Dict] = None,
         current_winning_streak: int = 0,
         recent_win_rate: float = 0.5
     ) -> Tuple[Optional[str], float]:
@@ -343,7 +474,7 @@ class RiskAdjustedDecision:
         """
         
         direction, confidence = self.engine.make_decision(
-            ml_prediction, patterns, indicators, market_state, market_health
+            ml_prediction, patterns, indicators, market_state, market_health, multi_tf_trend
         )
         
         if direction is None:

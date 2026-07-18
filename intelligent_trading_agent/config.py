@@ -22,12 +22,16 @@ CONTRACT_DURATION = int(os.getenv("CONTRACT_DURATION", "5"))  # Duration value
 CONTRACT_DURATION_UNIT = os.getenv("CONTRACT_DURATION_UNIT", "m")  # s=seconds, m=minutes, h=hours, t=ticks
 
 # Trade Management
-MAX_CONCURRENT_TRADES = int(os.getenv("MAX_CONCURRENT_TRADES", "3"))  # Max open trades at once
+MAX_CONCURRENT_TRADES = int(os.getenv("MAX_CONCURRENT_TRADES", "1"))  # Max open trades at once (1 = strict sequential)
 
 # === Risk Management ===
 MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", "10.0"))
 MAX_CONSEC_LOSSES = int(os.getenv("MAX_CONSEC_LOSSES", "3"))
 MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", "20.0"))
+USE_MARTINGALE = os.getenv("USE_MARTINGALE", "false").lower() == "true"
+
+# Global consecutive losses across market switches (prevents loss-chaining through market hopping)
+MAX_GLOBAL_CONSEC_LOSSES = int(os.getenv("MAX_GLOBAL_CONSEC_LOSSES", "4"))
 
 # === Agent Decision Thresholds ===
 MIN_CONFIDENCE = 0.65           # Minimum confidence to place a trade (balanced for quality)

@@ -128,6 +128,20 @@ class IntelligentTradingAgent:
         self.running = True
         agent_logger.log_info("Starting trading agent...")
         
+        # Clear any stale pause state from previous sessions
+        self.risk_manager.trading_paused = False
+        self.risk_manager.pause_reason = None
+        agent_logger.log_info("✅ Cleared any stale pause state from previous sessions")
+        
+        # Clear loaded trade history from learning system to prevent stale data
+        # from previous sessions causing false pause recommendations.
+        # The learning system loads trades from disk, but those trades may have
+        # poor performance that doesn't reflect current market conditions.
+        # We keep the performance_data for strategy selection but clear the
+        # recent trade history used for pause recommendations.
+        self.learning_system.trade_history.clear()
+        agent_logger.log_info("✅ Cleared loaded trade history for fresh session start")
+        
         # Load models from disk if they exist
         self._load_models()
         
@@ -155,6 +169,8 @@ class IntelligentTradingAgent:
             
             # Set up callbacks
             self.client.on_tick = self._on_tick_received
+            self.client.on_buy_confirmed = self._on_buy_confirmed
+            self.client.on_buy_failed = self._on_buy_failed
             self.client.on_contract_result = self._on_contract_result
             self.client.on_error = self._on_api_error
             
@@ -173,9 +189,17 @@ class IntelligentTradingAgent:
         last_processed_tick = {sym: 0 for sym in self.symbols}
         loop_iterations = 0  # Track loop iterations for debugging
         
+        # Track time-based contract cleanup (not just tick-based)
+        self._last_contract_cleanup_time = time.time()
+        
         while self.running:
             try:
                 loop_iterations += 1
+                
+                # Step 0: Update dashboard and check for commands (at the very top)
+                if loop_iterations % 5 == 0:
+                    self._update_dashboard_state()
+                    self._process_dashboard_commands()
                 
                 # Log heartbeat every 1000 iterations to show loop is running
                 if loop_iterations % 1000 == 0:
@@ -187,10 +211,17 @@ class IntelligentTradingAgent:
                         f"authorized={self.client.authorized}"
                     )
                 
-                # Check if client is connected and authorized
-                if not self.client.connected or not self.client.authorized:
+                # Check if client is connected
+                if not self.client.connected:
                     if loop_iterations % 100 == 0:
-                        agent_logger.log_warning("⏸ Client not connected/authorized, waiting...")
+                        agent_logger.log_warning("⏸ Client not connected, waiting...")
+                    time.sleep(1)
+                    continue
+                
+                # Check if client is authorized
+                if not self.client.authorized:
+                    if loop_iterations % 200 == 0:
+                        agent_logger.log_warning("⏸ Client not authorized, waiting...")
                     time.sleep(1)
                     continue
                 
@@ -318,9 +349,9 @@ class IntelligentTradingAgent:
                                     self.multi_market_monitor.update_market(sym, sym_latest_price, volume=1.0)
                 
                 # Step 3: Periodically scan and switch to best market
-                # CRITICAL: Don't switch markets if:
-                # 1. Martingale recovery is active (must recover on same market)
-                # 2. There's an active contract open (wait for it to close first)
+                # KEY IMPROVEMENT: Analyzes ALL markets but ONLY trades the one
+                # with the clearest trending state. Does NOT switch markets while
+                # an active contract is open.
                 if self.tick_count % 25 == 0 and self.monitoring_multiple_markets:
                     # Log current tick counts for all symbols
                     if self.tick_count % 100 == 0:
@@ -335,39 +366,81 @@ class IntelligentTradingAgent:
                                 f"🔒 Market LOCKED on {self.symbol} - Active contract open "
                                 f"({contract_ids}) - Will NOT switch until contract closes"
                             )
-                    # Check if Martingale recovery is active
-                    elif self.risk_manager.martingale_step > 0:
-                        if self.tick_count % 50 == 0:
-                            agent_logger.log_warning(
-                                f"🔒 Market LOCKED on {self.symbol} - Martingale recovery active "
-                                f"(step {self.risk_manager.martingale_step}/{self.risk_manager.max_martingale_steps}) "
-                                f"- Will NOT switch until recovery complete"
-                            )
                     else:
-                        # Only scan for new markets if NOT in Martingale recovery
+                        # Scan for best trending market
                         best_opportunity = self._find_best_market_opportunity()
-                        if best_opportunity and best_opportunity.symbol != self.symbol:
-                            # Check if new market is significantly better (score difference > 10)
+                        if best_opportunity:
+                            # Only switch if:
+                            # 1. It's a different market
+                            # 2. Current market is NOT trending (or target is MUCH better)
+                            # 3. Target market is actually in a trending state
+                            is_current_trending = 'trending' in self.current_market_state
                             current_score = self._calculate_current_market_score()
-                            if best_opportunity.score > current_score + 10:
+                            
+                            # Calculate switching threshold: 
+                            # - If current is NOT trending, any trending market with higher score is enough
+                            # - If current IS trending, require a large difference to flip
+                            if not is_current_trending:
+                                switch_threshold = 5  # Small threshold if current is non-trending
+                            else:
+                                switch_threshold = 25  # Bigger threshold if already in a trend
+                            
+                            # Check if target market has a clear trend
+                            target_state = getattr(best_opportunity, 'market_state', 'unknown')
+                            target_is_trending = 'trending' in target_state
+                            
+                            should_switch = (
+                                best_opportunity.symbol != self.symbol and
+                                best_opportunity.score > current_score + switch_threshold and
+                                target_is_trending
+                            )
+                            
+                            if should_switch:
                                 agent_logger.log_info(
-                                    f"🔄 Switching markets: {self.symbol} (score={current_score:.1f}) → "
-                                    f"{best_opportunity.symbol} (score={best_opportunity.score:.1f})"
+                                    f"🔄 Switching markets: {self.symbol} (score={current_score:.1f}, state={self.current_market_state}) → "
+                                    f"{best_opportunity.symbol} (score={best_opportunity.score:.1f}, state={target_state})"
                                 )
                                 self.symbol = best_opportunity.symbol
                                 self.current_market_analyzer = self.market_analyzers[self.symbol]
-                                self.pattern_recognizer = ChartPatternRecognizer(window=100)
+                                # FIX: Use existing pattern_recognizer from multi_market_monitor instead of creating a new one
+                                self.pattern_recognizer = self.multi_market_monitor.pattern_recognizers.get(
+                                    self.symbol, ChartPatternRecognizer(window=100)
+                                )
                                 self.client.symbol = self.symbol
                                 agent_logger.log_info(
                                     f"📊 New market: {best_opportunity.symbol} | "
-                                    f"State: {best_opportunity.market_state} | "
+                                    f"State: {target_state} | "
                                     f"Strategy: {best_opportunity.strategy} | "
                                     f"Confidence: {best_opportunity.confidence:.2f}"
                                 )
+                            elif self.tick_count % 100 == 0:
+                                # Log analysis status
+                                if target_is_trending:
+                                    agent_logger.log_info(
+                                        f"📊 Market scan: {self.symbol} (trending={is_current_trending}, score={current_score:.1f}) | "
+                                        f"Best other: {best_opportunity.symbol} (trending={target_is_trending}, score={best_opportunity.score:.1f}) | "
+                                        f"Difference={best_opportunity.score-current_score:.1f} (need>={switch_threshold})"
+                                    )
                 
                 # Step 3.5: Log multi-market status periodically
                 if self.tick_count % 100 == 0 and self.monitoring_multiple_markets:
                     self._log_multi_market_status()
+                
+                # Step 3.75: Check for stuck contracts (run BEFORE any continue statements)
+                # This is critical: if the bot is in a state where it can't trade (overbought,
+                # oversold, contradictory patterns, etc.), the continue statements below would
+                # skip the cleanup code. By running cleanup here, we ensure stuck contracts
+                # are always cleaned up regardless of market conditions.
+                if len(self.active_contracts) > 0:
+                    # Tick-based cleanup (every 100 ticks)
+                    if self.tick_count % 100 == 0:
+                        self._cleanup_stuck_contracts()
+                    
+                    # Time-based cleanup (every 30 seconds of real time)
+                    current_time = time.time()
+                    if current_time - self._last_contract_cleanup_time >= 30:
+                        self._last_contract_cleanup_time = current_time
+                        self._cleanup_stuck_contracts_time_based()
                 
                 # Step 4: Analyze current market state
                 self.current_market_state = self.current_market_analyzer.detect_market_state()
@@ -416,6 +489,20 @@ class IntelligentTradingAgent:
                     'confidence': ml_confidence
                 }
                 
+                # Step 6.6: Get multi-timeframe trend analysis from pattern recognizer
+                multi_tf_trend = None
+                if hasattr(self.pattern_recognizer, 'multi_tf_analyzer'):
+                    tf_analysis = self.pattern_recognizer.multi_tf_analyzer.get_aligned_trend()
+                    if tf_analysis['is_trending']:
+                        multi_tf_trend = tf_analysis
+                        if self.tick_count % 50 == 0:
+                            agent_logger.log_info(
+                                f"📊 Multi-timeframe trend: {tf_analysis['primary_direction'].upper()} "
+                                f"(strength={tf_analysis['strength']:.2f}, "
+                                f"higher_medium_agree={tf_analysis['higher_medium_agree']}, "
+                                f"all_aligned={tf_analysis['all_timeframes_align']})"
+                            )
+                
                 # Step 6.75: Prepare pattern data for decision engine
                 pattern_data = None
                 if patterns_detected:
@@ -443,28 +530,28 @@ class IntelligentTradingAgent:
                 rsi = indicators.get('rsi', 50)
                 bb_position = indicators.get('bb_position', 0.5)
                 
-                # Block trading if indicators are at dangerous extremes
-                # Tightened thresholds to avoid false breakout signals
-                # RSI 0-25 = oversold (likely to bounce down before going up)
-                # RSI 75-100 = overbought (likely to bounce up before going down)
-                if rsi >= 75:
+                # Block trading only at EXTREME RSI levels (not moderate ones)
+                # RSI 0-15 = severely oversold (likely to bounce)
+                # RSI 85-100 = severely overbought (likely to reverse)
+                # Moderate RSI (15-85) is fine for trend following
+                if rsi >= 85:
                     if self.tick_count % 100 == 0:
                         agent_logger.log_warning(
-                            f"⚠️ OVERBOUGHT: RSI={rsi:.1f} - Waiting for stabilization (threshold: 75)"
+                            f"⚠️ EXTREME OVERBOUGHT: RSI={rsi:.1f} - Waiting for stabilization (threshold: 85)"
                         )
                     time.sleep(0.05)
                     continue
                 
-                if rsi <= 25:
+                if rsi <= 15:
                     if self.tick_count % 100 == 0:
                         agent_logger.log_warning(
-                            f"⚠️ OVERSOLD: RSI={rsi:.1f} - Waiting for stabilization (threshold: 25)"
+                            f"⚠️ EXTREME OVERSOLD: RSI={rsi:.1f} - Waiting for stabilization (threshold: 15)"
                         )
                     time.sleep(0.05)
                     continue
                 
-                # Tightened BB threshold - price at bands means mean reversion likely
-                if bb_position >= 0.9 or bb_position <= 0.1:
+                # BB threshold - only block at very extreme edges
+                if bb_position >= 0.95 or bb_position <= 0.05:
                     if self.tick_count % 100 == 0:
                         agent_logger.log_warning(
                             f"⚠️ EXTREME BB position: {bb_position:.2f} - Price near band edge, waiting for mean reversion"
@@ -472,15 +559,18 @@ class IntelligentTradingAgent:
                     time.sleep(0.05)
                     continue
                 
-                # PATTERN CONTRADICTION CHECK: Don't trade if bullish and bearish patterns coexist
+                # PATTERN CONTRADICTION CHECK: Only block if patterns are EQUALLY contradictory
+                # (same number of bullish and bearish patterns with similar confidence)
                 if pattern_data and 'patterns' in pattern_data:
                     bullish_count = sum(1 for p in pattern_data['patterns'].values() if p['type'] == 'bullish')
                     bearish_count = sum(1 for p in pattern_data['patterns'].values() if p['type'] == 'bearish')
                     
-                    if bullish_count > 0 and bearish_count > 0:
+                    # Only block if perfectly balanced (equal bullish and bearish)
+                    # If one side dominates, let the decision engine handle it
+                    if bullish_count > 0 and bearish_count > 0 and bullish_count == bearish_count:
                         if self.tick_count % 100 == 0:
                             agent_logger.log_warning(
-                                f"⚠️ CONTRADICTORY PATTERNS: {bullish_count} bullish + {bearish_count} bearish patterns detected - "
+                                f"⚠️ EQUAL CONTRADICTORY PATTERNS: {bullish_count} bullish + {bearish_count} bearish - "
                                 f"No clear directional signal, waiting for clarity"
                             )
                         time.sleep(0.05)
@@ -491,7 +581,8 @@ class IntelligentTradingAgent:
                     patterns=pattern_data,
                     indicators=indicators,
                     market_state=self.current_market_state,
-                    market_health=self.market_health
+                    market_health=self.market_health,
+                    multi_tf_trend=multi_tf_trend
                 )
                 
                 # Store for logging
@@ -539,6 +630,98 @@ class IntelligentTradingAgent:
                         )
                     time.sleep(0.05)
                     continue
+                
+                # === INITIAL MARKET SELECTION ===
+                # The first time we pass warmup, analyze ALL markets and pick the
+                # single best one to focus on.  This ensures the bot doesn't start
+                # blindly on DEFAULT_SYMBOL but instead picks the market with the
+                # clearest trend / strongest signal.
+                if not hasattr(self, '_initial_market_selected'):
+                    self._initial_market_selected = True
+                    agent_logger.log_info("=" * 80)
+                    agent_logger.log_info("🔍 INITIAL MARKET SCAN — Analyzing all markets after warmup...")
+                    agent_logger.log_info("=" * 80)
+                    
+                    # Build complete market data for ALL symbols that have enough history
+                    market_data_dict = {}
+                    for symbol in self.symbols:
+                        analyzer = self.market_analyzers[symbol]
+                        if len(analyzer.price_history) < 50:
+                            agent_logger.log_info(f"  ⏭ {symbol}: skipping (only {len(analyzer.price_history)} ticks, need 50)")
+                            continue
+                        
+                        features = analyzer.feature_engine.extract_features()
+                        market_data_dict[symbol] = {
+                            'features': features,
+                            'price': features.get('price_current', 0),
+                            'timestamp': datetime.now().isoformat(),
+                            'symbol': symbol
+                        }
+                        agent_logger.log_info(
+                            f"  ✓ {symbol}: {len(analyzer.price_history)} ticks, "
+                            f"state={analyzer.detect_market_state()}, "
+                            f"price={features.get('price_current', 0):.5f}"
+                        )
+                    
+                    # Use multi-market monitor to scan and rank
+                    if market_data_dict:
+                        opportunities = self.multi_market_monitor.scan_all_markets(market_data_dict)
+                        if opportunities:
+                            # Log all ranked opportunities
+                            agent_logger.log_info("📊 MARKET RANKINGS (by opportunity score):")
+                            for i, opp in enumerate(opportunities):
+                                marker = "🎯" if i == 0 else "  "
+                                agent_logger.log_info(
+                                    f"  {marker} #{i+1}: {opp.symbol:8} | "
+                                    f"Score: {opp.score:5.1f} | "
+                                    f"State: {opp.market_state:15} | "
+                                    f"Strategy: {opp.strategy:12} | "
+                                    f"Confidence: {opp.confidence:.2f} | "
+                                    f"Health: {opp.health:.1f}"
+                                )
+                            
+                            # Select the best market
+                            best = opportunities[0]
+                            agent_logger.log_info("=" * 80)
+                            agent_logger.log_info(
+                                f"🎯 SELECTED MARKET: {best.symbol} "
+                                f"(score={best.score:.1f}, state={best.market_state}, "
+                                f"strategy={best.strategy}, conf={best.confidence:.2f})"
+                            )
+                            agent_logger.log_info("=" * 80)
+                            
+                            # Apply selection
+                            self.symbol = best.symbol
+                            self.current_market_analyzer = self.market_analyzers[self.symbol]
+                            self.pattern_recognizer = self.multi_market_monitor.pattern_recognizers.get(
+                                self.symbol, ChartPatternRecognizer(window=100)
+                            )
+                            self.client.symbol = self.symbol
+                            self.current_market_state = best.market_state
+                            
+                            # Unsubscribe from all non-selected symbols to stop
+                            # receiving ticks for markets we're not trading.
+                            if self.monitoring_multiple_markets:
+                                for sym in self.symbols:
+                                    if sym != self.symbol:
+                                        self.client.unsubscribe_from_symbol(sym)
+                                agent_logger.log_info(
+                                    f"🔕 Unsubscribed from non-selected markets: "
+                                    f"{', '.join(s for s in self.symbols if s != self.symbol)}"
+                                )
+                                agent_logger.log_info(
+                                    f"✅ Now ONLY receiving ticks for selected market: {self.symbol}"
+                                )
+                        else:
+                            agent_logger.log_warning(
+                                f"⚠️ No market opportunities found! "
+                                f"Staying with default symbol: {self.symbol}"
+                            )
+                    else:
+                        agent_logger.log_warning(
+                            f"⚠️ No markets have enough data for selection! "
+                            f"Staying with default symbol: {self.symbol}"
+                        )
                 
                 # After warmup, block if EITHER the agent's or strategy selector's
                 # market state is still unknown. Both must agree on a real state.
@@ -625,22 +808,6 @@ class IntelligentTradingAgent:
                         if reasons:
                             agent_logger.log_info(f"❌ Not trading: {', '.join(reasons)}")
                 
-                # Step 12: Check for stuck contracts (contracts open for too long)
-                if self.tick_count % 500 == 0 and len(self.active_contracts) > 0:
-                    for key, trade in list(self.active_contracts.items()):
-                        tick_opened = trade.get('tick_opened', self.tick_count)
-                        ticks_open = self.tick_count - tick_opened
-                        # 5-minute contract should close in ~300 ticks (at 1 tick/sec)
-                        # But we're seeing 600-1000 ticks in practice
-                        # If open for 1200+ ticks (20 minutes), it's definitely stuck
-                        if ticks_open > 1200:
-                            agent_logger.log_warning(
-                                f"⚠️ Stuck contract detected: {key} open for {ticks_open} ticks "
-                                f"(expected ~300-600). Removing from active list."
-                            )
-                            # Remove stuck contract
-                            del self.active_contracts[key]
-                
                 # Step 13: Check for model retraining
                 if self.tick_count % (RETRAIN_EVERY * 10) == 0:
                     if self.learning_system.should_retrain_model():
@@ -652,6 +819,12 @@ class IntelligentTradingAgent:
                     if any(recommendations.values()):
                         self.risk_manager.adapt_risk_parameters(recommendations)
                 
+                # Step 14.5: Auto-resume from learning system pause if enough ticks have passed
+                # The learning system may pause trading after a bad streak, but we need to
+                # auto-resume after a cooldown period so the agent doesn't stay paused forever.
+                if self.tick_count % 25 == 0:
+                    self.risk_manager.check_auto_resume(self.tick_count)
+                
                 # Step 15: Periodic status logs
                 if self.tick_count % 500 == 0:
                     self._log_status()
@@ -661,6 +834,251 @@ class IntelligentTradingAgent:
             except Exception as e:
                 agent_logger.log_error(f"Error in trading loop: {e}")
                 time.sleep(1)
+    
+    def _cleanup_stuck_contracts(self):
+        """Clean up contracts that have been open for too long (tick-based)."""
+        for key, trade in list(self.active_contracts.items()):
+            tick_opened = trade.get('tick_opened', self.tick_count)
+            ticks_open = self.tick_count - tick_opened
+            
+            # Check for PENDING contracts that never got a buy confirmation
+            # These are contracts where buy_contract() was called but the
+            # Deriv API never responded with a buy confirmation.
+            # If pending for more than 30 ticks (~30 seconds), it's stuck.
+            if isinstance(key, str) and key.startswith('pending_'):
+                if ticks_open > 30:
+                    agent_logger.log_warning(
+                        f"⚠️ Stuck PENDING contract detected: {key} open for {ticks_open} ticks "
+                        f"- Deriv never confirmed the buy. Removing from active list."
+                    )
+                    del self.active_contracts[key]
+                continue
+            
+            # For confirmed contracts (have real contract_id):
+            # 5-minute contract should close in ~300 ticks (at 1 tick/sec)
+            # If open for 450+ ticks (7.5 minutes), it's definitely stuck
+            # (give some buffer for tick rate variation)
+            if ticks_open > 450:
+                agent_logger.log_warning(
+                    f"⚠️ Stuck contract detected: {key} open for {ticks_open} ticks "
+                    f"(expected ~300). Removing from active list."
+                )
+                del self.active_contracts[key]
+    
+    def _cleanup_stuck_contracts_time_based(self):
+        """
+        Time-based stuck contract cleanup.
+        This runs even when ticks aren't flowing (e.g., after WebSocket disconnect).
+        Uses real wall-clock time instead of tick count.
+        """
+        current_time = time.time()
+        for key, trade in list(self.active_contracts.items()):
+            # Skip pending contracts (handled by tick-based cleanup)
+            if isinstance(key, str) and key.startswith('pending_'):
+                continue
+            
+            # Get the timestamp when the contract was opened
+            trade_timestamp = trade.get('timestamp')
+            if not trade_timestamp:
+                continue
+            
+            try:
+                # Parse the ISO timestamp
+                opened_time = datetime.fromisoformat(trade_timestamp).timestamp()
+                elapsed_seconds = current_time - opened_time
+                
+                # 5-minute contract should close in ~5 minutes (300 seconds)
+                # If open for 7+ minutes (420 seconds), it's stuck
+                # (give 2-minute buffer for WebSocket latency/processing delays)
+                if elapsed_seconds > 420:
+                    agent_logger.log_warning(
+                        f"⚠️ Stuck contract detected (time-based): {key} open for {elapsed_seconds:.0f}s "
+                        f"(expected ~300s). Removing from active list."
+                    )
+                    del self.active_contracts[key]
+            except (ValueError, TypeError) as e:
+                agent_logger.log_warning(
+                    f"⚠️ Could not parse timestamp for contract {key}: {e}. "
+                    f"Removing from active list to prevent blocking."
+                )
+                del self.active_contracts[key]
+    
+    def _update_dashboard_state(self):
+        """Update dashboard state file for web UI."""
+        try:
+            regime = self.current_market_analyzer.get_market_regime()
+            risk_metrics = self.risk_manager.get_risk_metrics()
+            
+            # Prepare market opportunities for dashboard
+            market_opps = []
+            if hasattr(self.multi_market_monitor, 'current_opportunities'):
+                opportunities = self.multi_market_monitor.current_opportunities
+                # Handle both dict and list for robustness
+                iterable_opps = opportunities.values() if isinstance(opportunities, dict) else opportunities
+                for opp in iterable_opps:
+                    market_opps.append({
+                        'symbol': getattr(opp, 'symbol', 'Unknown'),
+                        'score': getattr(opp, 'score', 0.0),
+                        'confidence': getattr(opp, 'confidence', 0.0),
+                        'strategy': getattr(opp, 'strategy', 'N/A'),
+                        'market_state': getattr(opp, 'market_state', 'Unknown'),
+                        'market_health': getattr(opp, 'health', 0.0)
+                    })
+
+            state = {
+                'agent_id': self.agent_id,
+                'symbol': self.symbol,
+                'daily_profit': self.daily_profit,
+                'daily_loss': self.daily_loss,
+                'win_count': self.win_count,
+                'loss_count': self.loss_count,
+                'total_trades': self.total_trades,
+                'consecutive_losses': self.consecutive_losses,
+                'market_state': regime['state'],
+                'market_health': regime['health'],
+                'current_strategy': self.current_strategy,
+                'confidence': self.confidence,
+                'drawdown': risk_metrics['drawdown'],
+                'max_drawdown': risk_metrics['max_drawdown'],
+                'tick_count': self.tick_count,
+                'warmup_progress': min(100, int(self.tick_count / 200 * 100)),
+                'trading_paused': self.risk_manager.trading_paused,
+                'pause_reason': getattr(self.risk_manager, 'pause_reason', None),
+                'trade_direction': self.trade_direction,
+                'ensemble_confidence': self.ensemble_confidence,
+                'signals': {
+                    'ml': self.current_signals.get('ml'),
+                    'pattern': self.current_signals.get('patterns'),
+                    'indicator': {k: v for k, v in self.current_signals.get('indicators', {}).items() if isinstance(v, (int, float, str))}
+                },
+                'recent_trades': self.session_trades[-10:],  # Last 10 trades
+                'active_trades': [
+                    {
+                        'id': k,
+                        'symbol': v['symbol'],
+                        'type': v['contract_type'],
+                        'prediction': v['prediction'],
+                        'entry_price': v['entry_price'],
+                        'buy_price': v['buy_price'],
+                        'timestamp': v['timestamp'],
+                        'ticks_open': self.tick_count - v.get('tick_opened', self.tick_count)
+                    } for k, v in self.active_contracts.items()
+                ],
+                'market_opportunities': market_opps,
+                'pnl_history': self.pnl_history[-50:],  # Last 50 points
+                'last_update': datetime.now().isoformat(),
+                # Current config settings (to sync back to dashboard)
+                'config': {
+                    'stake': self.risk_manager.current_stake,
+                    'max_daily_loss': self.risk_manager.max_daily_loss,
+                    'max_consec_losses': self.risk_manager.max_consecutive_losses,
+                    'min_confidence': self.risk_manager.min_confidence_threshold,
+                    'min_market_health': MIN_MARKET_HEALTH,
+                    'use_martingale': self.risk_manager.use_martingale,
+                    'martingale_step': self.risk_manager.martingale_step,
+                    'martingale_active': self.risk_manager.martingale_step > 0,
+                    'global_consec_losses': self.risk_manager.global_consecutive_losses,
+                    'max_global_consec_losses': self.risk_manager.max_global_consecutive_losses
+                }
+            }
+            
+            # Check for stop signal file
+            if os.path.exists('STOP_SIGNAL'):
+                agent_logger.log_info("🛑 Stop signal detected from dashboard. Stopping agent...")
+                self.running = False
+                os.remove('STOP_SIGNAL')
+            
+            # Save to file
+            with open('dashboard_state.json', 'w') as f:
+                json.dump(state, f, indent=2)
+                
+        except Exception as e:
+            # Don't log on every failure to avoid spamming
+            if self.tick_count % 100 == 0:
+                agent_logger.log_error(f"Error updating dashboard state: {e}")
+
+    def _process_dashboard_commands(self):
+        """Process commands and setting changes from dashboard."""
+        try:
+            if not os.path.exists('dashboard_commands.json'):
+                return
+                
+            with open('dashboard_commands.json', 'r') as f:
+                commands = json.load(f)
+            
+            if not commands:
+                return
+                
+            agent_logger.log_info(f"📥 Received dashboard commands: {commands}")
+            
+            # Process settings
+            if 'settings' in commands:
+                settings = commands['settings']
+                if 'stake' in settings:
+                    new_stake = float(settings['stake'])
+                    self.risk_manager.base_stake = new_stake
+                    self.risk_manager.current_stake = new_stake
+                    agent_logger.log_info(f"⚙️ Base Stake updated to: ${new_stake}")
+                if 'max_daily_loss' in settings:
+                    self.risk_manager.max_daily_loss = float(settings['max_daily_loss'])
+                    agent_logger.log_info(f"⚙️ Max Daily Loss updated to: ${self.risk_manager.max_daily_loss}")
+                if 'max_consec_losses' in settings:
+                    self.risk_manager.max_consecutive_losses = int(settings['max_consec_losses'])
+                    agent_logger.log_info(f"⚙️ Max Consec Losses updated to: {self.risk_manager.max_consecutive_losses}")
+                if 'min_confidence' in settings:
+                    self.risk_manager.min_confidence_threshold = float(settings['min_confidence'])
+                    agent_logger.log_info(f"⚙️ Min Confidence updated to: {self.risk_manager.min_confidence_threshold}")
+                if 'use_martingale' in settings:
+                    martingale_enabled = bool(settings['use_martingale'])
+                    self.risk_manager.set_martingale_enabled(martingale_enabled)
+                if 'max_global_consec_losses' in settings:
+                    self.risk_manager.max_global_consecutive_losses = int(settings['max_global_consec_losses'])
+                    agent_logger.log_info(f"⚙️ Max Global Consec Losses updated to: {self.risk_manager.max_global_consecutive_losses}")
+            
+            # Process actions
+            if 'action' in commands:
+                action = commands['action']
+                if action == 'pause':
+                    self.risk_manager.trading_paused = True
+                    self.risk_manager.pause_reason = "Paused via dashboard"
+                    agent_logger.log_info("⏸ Trading paused via dashboard")
+                elif action == 'resume':
+                    self.risk_manager.trading_paused = False
+                    self.risk_manager.pause_reason = None
+                    agent_logger.log_info("▶ Trading resumed via dashboard")
+                elif action == 'reset_stats':
+                    self.daily_profit = 0.0
+                    self.daily_loss = 0.0
+                    self.win_count = 0
+                    self.loss_count = 0
+                    self.consecutive_losses = 0
+                    self.session_trades = []
+                    self.pnl_history = []
+                    self.risk_manager.reset_daily_stats()
+                    agent_logger.log_info("🔄 Stats reset via dashboard")
+                elif action == 'switch_market' and 'symbol' in commands:
+                    new_symbol = commands['symbol']
+                    if new_symbol in self.symbols and new_symbol != self.symbol:
+                        agent_logger.log_info(f"🔄 Manual market switch to {new_symbol}")
+                        self.symbol = new_symbol
+                        self.current_market_analyzer = self.market_analyzers[self.symbol]
+                        self.client.symbol = self.symbol
+                elif action == 'force_trade' and 'direction' in commands:
+                    direction = commands['direction']
+                    agent_logger.log_info(f"🚀 FORCING manual trade: {direction}")
+                    # Use a default strategy for forced trades
+                    self._execute_trade('rise_fall', {
+                        'features': self.current_market_analyzer.feature_engine.extract_features(),
+                        'price': self.latest_price,
+                        'timestamp': datetime.now().isoformat(),
+                        'symbol': self.symbol
+                    }, 1.0, self.risk_manager.current_stake, ensemble_direction=direction.lower())
+
+            # Clear commands after processing
+            os.remove('dashboard_commands.json')
+            
+        except Exception as e:
+            agent_logger.log_error(f"Error processing dashboard commands: {e}")
     
     def _get_market_data(self) -> Optional[Dict]:
         """Get current market data from Deriv."""
@@ -675,6 +1093,34 @@ class IntelligentTradingAgent:
     def _get_price(self) -> Optional[float]:
         """Get current price from market data."""
         return self.latest_price
+    
+    def _on_buy_confirmed(self, data: Dict):
+        """Callback when a buy is confirmed by Deriv with a real contract_id."""
+        contract_id = data.get('contract_id', '')
+        buy_price = data.get('buy_price', 0)
+        
+        agent_logger.log_info(f"✅ Buy confirmed: contract_id={contract_id}, price=${buy_price:.2f}")
+        
+        # Find the pending contract and update its key to the real contract_id
+        for key, info in list(self.active_contracts.items()):
+            if isinstance(key, str) and key.startswith('pending_'):
+                # Update the key to actual contract_id
+                self.active_contracts[contract_id] = info
+                del self.active_contracts[key]
+                agent_logger.log_info(f"🔄 Updated pending contract {key} → real contract {contract_id}")
+                break
+    
+    def _on_buy_failed(self, data: Dict):
+        """Callback when a buy fails."""
+        error = data.get('error', 'Unknown error')
+        agent_logger.log_warning(f"❌ Buy failed: {error}")
+        
+        # Remove the pending contract so the agent can continue trading
+        for key in list(self.active_contracts.keys()):
+            if isinstance(key, str) and key.startswith('pending_'):
+                del self.active_contracts[key]
+                agent_logger.log_info(f"🗑️ Removed pending contract {key} due to buy failure")
+                break
     
     def _on_tick_received(self, tick_data: Dict):
         """Callback when new tick is received from Deriv."""
@@ -697,7 +1143,12 @@ class IntelligentTradingAgent:
     def _on_contract_result(self, result: Dict):
         """Callback when contract result is received."""
         contract_id = str(result.get('contract_id', ''))
-        profit = result.get('profit', 0)
+        # Deriv API can return profit as string or number — normalize to float
+        raw_profit = result.get('profit', 0)
+        try:
+            profit = float(raw_profit)
+        except (ValueError, TypeError):
+            profit = 0.0
         status = result.get('status', 'unknown')
         
         if contract_id in self.processed_contracts:

@@ -1,27 +1,298 @@
 """
-Chart Pattern Recognition - Detects technical chart patterns.
+Chart Pattern Recognition - Detects technical chart patterns and candlestick patterns.
 Recognizes: Head & Shoulders, Triangles, Double Tops/Bottoms, Flags, Wedges, Breakouts
+Plus: Japanese candlestick patterns (doji, hammer, engulfing, harami, etc.)
+Plus: Multi-timeframe trend analysis and candle-by-candle learning.
 """
 
 import numpy as np
-from typing import Dict, List, Optional
-from collections import deque
+from typing import Dict, List, Optional, Tuple
+from collections import deque, defaultdict
+from logger import agent_logger
+
+
+class Candle:
+    """Represents a single candlestick with OHLC data."""
+    def __init__(self, open_p: float, high: float, low: float, close: float, volume: float = 1.0):
+        self.open = open_p
+        self.high = high
+        self.low = low
+        self.close = close
+        self.volume = volume
+        self.body = abs(close - open_p)
+        self.upper_wick = high - max(open_p, close)
+        self.lower_wick = min(open_p, close) - low
+        self.total_range = high - low
+        self.is_bullish = close > open_p
+        self.is_bearish = close < open_p
+        self.body_ratio = self.body / self.total_range if self.total_range > 0 else 0
+
+    def __repr__(self):
+        return f"Candle(O={self.open:.2f}, H={self.high:.2f}, L={self.low:.2f}, C={self.close:.2f}, {'BULL' if self.is_bullish else 'BEAR'})"
+
+
+class CandlePatternLearner:
+    """
+    Learns from every candle movement - tracks how each candle type
+    predicts the next N candles' direction. Builds a statistical model
+    of candle pattern effectiveness.
+    """
+    
+    def __init__(self, max_history: int = 500):
+        self.candle_history = deque(maxlen=max_history)
+        self.pattern_performance = defaultdict(lambda: {'wins': 0, 'losses': 0, 'total': 0})
+        self.lookahead = 5  # How many candles ahead to check for prediction accuracy
+        
+    def add_candle(self, candle: Candle):
+        """Add a candle and update pattern performance statistics."""
+        self.candle_history.append(candle)
+        self._update_pattern_learning(candle)
+    
+    def _update_pattern_learning(self, candle: Candle):
+        """Learn from this candle - check if previous patterns predicted correctly."""
+        if len(self.candle_history) < self.lookahead + 1:
+            return
+        
+        # Check what patterns were detected `lookahead` candles ago
+        history_list = list(self.candle_history)
+        for i in range(len(history_list) - self.lookahead):
+            past_candle = history_list[i]
+            future_candle = history_list[i + self.lookahead]
+            
+            # Determine if past candle's pattern predicted correctly
+            pattern_name = self._classify_candle_type(past_candle)
+            if pattern_name == 'unknown':
+                continue
+            
+            # Did the price move in the expected direction?
+            if past_candle.is_bullish and future_candle.close > past_candle.close:
+                self.pattern_performance[pattern_name]['wins'] += 1
+            elif past_candle.is_bearish and future_candle.close < past_candle.close:
+                self.pattern_performance[pattern_name]['wins'] += 1
+            else:
+                self.pattern_performance[pattern_name]['losses'] += 1
+            self.pattern_performance[pattern_name]['total'] += 1
+    
+    def _classify_candle_type(self, candle: Candle) -> str:
+        """Classify a candle into a type for learning."""
+        if candle.body_ratio < 0.1 and candle.total_range > 0:
+            return 'doji'
+        if candle.is_bullish and candle.lower_wick > candle.body * 2 and candle.upper_wick < candle.body * 0.3:
+            return 'hammer'
+        if candle.is_bearish and candle.upper_wick > candle.body * 2 and candle.lower_wick < candle.body * 0.3:
+            return 'shooting_star'
+        if candle.is_bullish and candle.body > np.mean([c.body for c in list(self.candle_history)[-20:]]) * 1.5 if len(self.candle_history) >= 20 else 0:
+            return 'strong_bullish'
+        if candle.is_bearish and candle.body > np.mean([c.body for c in list(self.candle_history)[-20:]]) * 1.5 if len(self.candle_history) >= 20 else 0:
+            return 'strong_bearish'
+        if candle.is_bullish:
+            return 'bullish'
+        if candle.is_bearish:
+            return 'bearish'
+        return 'unknown'
+    
+    def get_pattern_accuracy(self, pattern_name: str) -> float:
+        """Get the historical accuracy of a candle pattern."""
+        stats = self.pattern_performance.get(pattern_name)
+        if not stats or stats['total'] == 0:
+            return 0.5
+        return stats['wins'] / stats['total']
+    
+    def get_best_patterns(self, top_n: int = 3) -> List[Tuple[str, float]]:
+        """Get the top N most accurate candle patterns."""
+        patterns = []
+        for name, stats in self.pattern_performance.items():
+            if stats['total'] >= 5:  # Minimum sample size
+                accuracy = stats['wins'] / stats['total']
+                patterns.append((name, accuracy, stats['total']))
+        
+        patterns.sort(key=lambda x: x[1], reverse=True)
+        return [(p[0], p[1]) for p in patterns[:top_n]]
+
+
+class MultiTimeframeTrendAnalyzer:
+    """
+    Analyzes trends across multiple timeframes.
+    Higher timeframes (slower) define the primary trend.
+    Lower timeframes (faster) define entry timing.
+    Only trades when multiple timeframes align.
+    """
+    
+    def __init__(self):
+        # Define timeframe windows (in ticks)
+        self.timeframes = {
+            'higher': 200,    # ~3.3 minutes at 1 tick/sec - primary trend
+            'medium': 100,    # ~1.7 minutes - secondary trend
+            'lower': 50,      # ~50 seconds - entry timing
+            'micro': 20,      # ~20 seconds - immediate momentum
+        }
+        self.price_histories = {name: deque(maxlen=window) for name, window in self.timeframes.items()}
+        
+    def add_price(self, price: float):
+        """Add price to all timeframe histories."""
+        for name, history in self.price_histories.items():
+            history.append(price)
+    
+    def get_trend_for_timeframe(self, tf_name: str) -> Dict:
+        """
+        Analyze trend for a specific timeframe.
+        Returns: {'direction': 'up'/'down'/'sideways', 'strength': 0-1, 'momentum': float}
+        """
+        history = self.price_histories[tf_name]
+        if len(history) < 20:
+            return {'direction': 'unknown', 'strength': 0.0, 'momentum': 0.0}
+        
+        prices = list(history)
+        
+        # Linear regression for slope
+        x = np.arange(len(prices))
+        slope = np.polyfit(x, prices, 1)[0]
+        avg_price = np.mean(prices)
+        
+        # Normalize slope as percentage change per tick
+        momentum = (slope / avg_price) * 100 if avg_price > 0 else 0
+        
+        # Calculate R-squared for trend strength
+        if len(prices) > 2:
+            z = np.polyfit(x, prices, 1)
+            p = np.poly1d(z)
+            residuals = prices - p(x)
+            ss_res = np.sum(residuals ** 2)
+            ss_tot = np.sum((prices - np.mean(prices)) ** 2)
+            r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+        else:
+            r_squared = 0
+        
+        # Determine direction
+        if momentum > 0.01:
+            direction = 'up'
+        elif momentum < -0.01:
+            direction = 'down'
+        else:
+            direction = 'sideways'
+        
+        # Strength based on R-squared and momentum magnitude
+        strength = min(abs(r_squared) * 2, 1.0) * min(abs(momentum) * 10, 1.0)
+        
+        return {
+            'direction': direction,
+            'strength': strength,
+            'momentum': momentum,
+            'r_squared': r_squared,
+            'slope': slope
+        }
+    
+    def get_aligned_trend(self) -> Dict:
+        """
+        Get the aligned trend across all timeframes.
+        Returns the primary trend direction and alignment score.
+        Only returns a direction if higher and medium timeframes agree.
+        """
+        trends = {}
+        for tf_name in self.timeframes:
+            trends[tf_name] = self.get_trend_for_timeframe(tf_name)
+        
+        higher = trends.get('higher', {})
+        medium = trends.get('medium', {})
+        lower = trends.get('lower', {})
+        micro = trends.get('micro', {})
+        
+        higher_dir = higher.get('direction', 'unknown')
+        medium_dir = medium.get('direction', 'unknown')
+        lower_dir = lower.get('direction', 'unknown')
+        micro_dir = micro.get('direction', 'unknown')
+        
+        # Count directions across timeframes (weighted by timeframe importance)
+        direction_weights = {
+            'up': 0,
+            'down': 0,
+            'sideways': 0,
+            'unknown': 0
+        }
+        
+        # Higher timeframe gets 4x weight, medium 2x, lower 1x, micro 0.5x
+        weights = {'higher': 4, 'medium': 2, 'lower': 1, 'micro': 0.5}
+        
+        for tf_name, trend in trends.items():
+            d = trend.get('direction', 'unknown')
+            w = weights.get(tf_name, 1)
+            if d in direction_weights:
+                direction_weights[d] += w * trend.get('strength', 0.5)
+        
+        # Determine primary direction
+        if direction_weights['up'] > direction_weights['down'] and direction_weights['up'] > direction_weights['sideways']:
+            primary = 'up'
+            alignment_score = direction_weights['up'] / (direction_weights['up'] + direction_weights['down'] + direction_weights['sideways'] + 0.001)
+        elif direction_weights['down'] > direction_weights['up'] and direction_weights['down'] > direction_weights['sideways']:
+            primary = 'down'
+            alignment_score = direction_weights['down'] / (direction_weights['up'] + direction_weights['down'] + direction_weights['sideways'] + 0.001)
+        else:
+            primary = 'sideways'
+            alignment_score = direction_weights['sideways'] / (direction_weights['up'] + direction_weights['down'] + direction_weights['sideways'] + 0.001)
+        
+        # Check if higher and medium timeframes agree (required for strong signal)
+        higher_medium_agree = higher_dir == medium_dir and higher_dir != 'unknown' and higher_dir != 'sideways'
+        
+        # Check if all timeframes align (strongest signal)
+        all_align = (
+            higher_dir == medium_dir == lower_dir and
+            higher_dir != 'unknown' and higher_dir != 'sideways'
+        )
+        
+        return {
+            'primary_direction': primary,
+            'alignment_score': alignment_score,
+            'higher_medium_agree': higher_medium_agree,
+            'all_timeframes_align': all_align,
+            'timeframes': trends,
+            'is_trending': higher_medium_agree and primary in ('up', 'down'),
+            'strength': alignment_score * (1.5 if all_align else 1.0 if higher_medium_agree else 0.5)
+        }
 
 
 class ChartPatternRecognizer:
     """
     Recognizes technical chart patterns for trading opportunities.
     Detects 8+ chart patterns that indicate potential price movements.
+    Plus: Japanese candlestick patterns and multi-timeframe trend analysis.
     """
     
     def __init__(self, window: int = 100):
         self.window = window
         self.prices = deque(maxlen=window)
         self.patterns_detected = {}
+        self.candle_learner = CandlePatternLearner()
+        self.multi_tf_analyzer = MultiTimeframeTrendAnalyzer()
+        self.last_candle = None
+        self.candle_count = 0
     
     def add_price(self, price: float):
-        """Add price to pattern recognizer."""
+        """Add price to pattern recognizer with candle formation."""
         self.prices.append(price)
+        self.multi_tf_analyzer.add_price(price)
+        
+        # Build candles from tick data (group every N ticks into a candle)
+        self.candle_count += 1
+        if self.last_candle is None:
+            self.last_candle = {'open': price, 'high': price, 'low': price, 'close': price, 'ticks': 1}
+        else:
+            candle = self.last_candle
+            candle['high'] = max(candle['high'], price)
+            candle['low'] = min(candle['low'], price)
+            candle['close'] = price
+            candle['ticks'] += 1
+            
+            # Every 5 ticks, form a complete candle and learn from it
+            if candle['ticks'] >= 5:
+                new_candle = Candle(
+                    open_p=candle['open'],
+                    high=candle['high'],
+                    low=candle['low'],
+                    close=candle['close']
+                )
+                self.candle_learner.add_candle(new_candle)
+                # Start new candle
+                self.last_candle = {'open': price, 'high': price, 'low': price, 'close': price, 'ticks': 1}
     
     def detect_all_patterns(self) -> Dict:
         """Detect all chart patterns in current price data."""
@@ -30,7 +301,7 @@ class ChartPatternRecognizer:
         
         patterns = {}
         
-        # Detect each pattern type
+        # Detect each chart pattern type
         patterns_to_check = [
             ('head_shoulders', self.detect_head_and_shoulders),
             ('double_top', self.detect_double_top),
@@ -47,7 +318,158 @@ class ChartPatternRecognizer:
             if result:
                 patterns[pattern_name] = result
         
+        # Add candlestick pattern analysis
+        candle_patterns = self._detect_candlestick_patterns()
+        if candle_patterns:
+            patterns.update(candle_patterns)
+        
+        # Add multi-timeframe trend analysis
+        tf_analysis = self.multi_tf_analyzer.get_aligned_trend()
+        if tf_analysis['is_trending']:
+            patterns['multi_timeframe_trend'] = {
+                'pattern': 'multi_timeframe_trend',
+                'signal': f"{tf_analysis['primary_direction']}_trend",
+                'confidence': min(tf_analysis['strength'], 0.95),
+                'alignment_score': tf_analysis['alignment_score'],
+                'all_timeframes_align': tf_analysis['all_timeframes_align'],
+                'higher_medium_agree': tf_analysis['higher_medium_agree'],
+                'timeframes': {
+                    tf: {
+                        'direction': t['direction'],
+                        'strength': t['strength'],
+                        'momentum': t['momentum']
+                    }
+                    for tf, t in tf_analysis['timeframes'].items()
+                }
+            }
+        
+        # Add candle learner insights
+        best_patterns = self.candle_learner.get_best_patterns(3)
+        if best_patterns:
+            patterns['candle_learning'] = {
+                'pattern': 'candle_learning',
+                'signal': 'learning_insight',
+                'confidence': 0.6,
+                'best_patterns': best_patterns,
+                'details': {
+                    name: {
+                        'accuracy': acc,
+                        'total_observations': self.candle_learner.pattern_performance[name]['total']
+                    }
+                    for name, acc in best_patterns
+                }
+            }
+        
         self.patterns_detected = patterns
+        return patterns
+    
+    def _detect_candlestick_patterns(self) -> Dict:
+        """Detect Japanese candlestick patterns from recent candles."""
+        if len(self.candle_learner.candle_history) < 3:
+            return {}
+        
+        candles = list(self.candle_learner.candle_history)
+        patterns = {}
+        
+        # Need at least 2 candles for most patterns
+        if len(candles) >= 2:
+            c1, c2 = candles[-2], candles[-1]
+            
+            # Bullish Engulfing
+            if (c1.is_bearish and c2.is_bullish and 
+                c2.open < c1.close and c2.close > c1.open):
+                patterns['bullish_engulfing'] = {
+                    'pattern': 'bullish_engulfing',
+                    'signal': 'bullish_reversal',
+                    'confidence': 0.75,
+                    'strength': c2.body / c1.body if c1.body > 0 else 1.0
+                }
+            
+            # Bearish Engulfing
+            if (c1.is_bullish and c2.is_bearish and 
+                c2.open > c1.close and c2.close < c1.open):
+                patterns['bearish_engulfing'] = {
+                    'pattern': 'bearish_engulfing',
+                    'signal': 'bearish_reversal',
+                    'confidence': 0.75,
+                    'strength': c2.body / c1.body if c1.body > 0 else 1.0
+                }
+            
+            # Bullish Harami
+            if (c1.is_bearish and c2.is_bullish and
+                c2.open > c1.close and c2.close < c1.open and
+                c2.body < c1.body * 0.5):
+                patterns['bullish_harami'] = {
+                    'pattern': 'bullish_harami',
+                    'signal': 'bullish_reversal',
+                    'confidence': 0.65
+                }
+            
+            # Bearish Harami
+            if (c1.is_bullish and c2.is_bearish and
+                c2.open < c1.close and c2.close > c1.open and
+                c2.body < c1.body * 0.5):
+                patterns['bearish_harami'] = {
+                    'pattern': 'bearish_harami',
+                    'signal': 'bearish_reversal',
+                    'confidence': 0.65
+                }
+        
+        # Check last single candle for doji/hammer/shooting star
+        if len(candles) >= 1:
+            last = candles[-1]
+            
+            # Doji (indecision)
+            if last.body_ratio < 0.1 and last.total_range > 0:
+                patterns['doji'] = {
+                    'pattern': 'doji',
+                    'signal': 'indecision',
+                    'confidence': 0.5,
+                    'location': 'high' if last.close > np.mean([c.close for c in candles[-10:]]) else 'low' if len(candles) >= 10 else 'middle'
+                }
+            
+            # Hammer (bullish reversal)
+            if (last.is_bullish and last.lower_wick > last.body * 2 and 
+                last.upper_wick < last.body * 0.3 and last.body > 0):
+                patterns['hammer'] = {
+                    'pattern': 'hammer',
+                    'signal': 'bullish_reversal',
+                    'confidence': 0.7,
+                    'lower_wick_ratio': last.lower_wick / last.body
+                }
+            
+            # Shooting Star (bearish reversal)
+            if (last.is_bearish and last.upper_wick > last.body * 2 and 
+                last.lower_wick < last.body * 0.3 and last.body > 0):
+                patterns['shooting_star'] = {
+                    'pattern': 'shooting_star',
+                    'signal': 'bearish_reversal',
+                    'confidence': 0.7,
+                    'upper_wick_ratio': last.upper_wick / last.body
+                }
+        
+        # Three White Soldiers (strong bullish continuation)
+        if len(candles) >= 3:
+            c1, c2, c3 = candles[-3], candles[-2], candles[-1]
+            if (c1.is_bullish and c2.is_bullish and c3.is_bullish and
+                c2.close > c1.close and c3.close > c2.close and
+                c2.open > c1.open and c3.open > c2.open):
+                patterns['three_white_soldiers'] = {
+                    'pattern': 'three_white_soldiers',
+                    'signal': 'bullish_continuation',
+                    'confidence': 0.8
+                }
+            
+            # Three Black Crows (strong bearish continuation)
+            if (c1.is_bearish and c2.is_bearish and c3.is_bearish and
+                c2.close < c1.close and c3.close < c2.close and
+                c2.open < c1.open and c3.open < c2.open):
+                patterns['three_black_crows'] = {
+                    'pattern': 'three_black_crows',
+                    'signal': 'bearish_continuation',
+                    'confidence': 0.8
+                }
+        
         return patterns
     
     def detect_head_and_shoulders(self) -> Optional[Dict]:
