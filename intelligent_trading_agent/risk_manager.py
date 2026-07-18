@@ -1,5 +1,11 @@
 """
 Risk management system - dynamic risk sizing, drawdown protection, position management.
+Features:
+- Kelly Criterion position sizing
+- Profit target / trailing stop
+- Adaptive confidence thresholds
+- Recent performance smoothing
+- Drawdown-based stake reduction
 """
 
 from typing import Dict, Optional
@@ -7,7 +13,8 @@ from logger import agent_logger
 from config import (
     BASE_STAKE, MAX_DAILY_LOSS, MAX_CONSEC_LOSSES, 
     MAX_DRAWDOWN, MIN_CONFIDENCE, MIN_MARKET_HEALTH,
-    MIN_STAKE_AMOUNT
+    MIN_STAKE_AMOUNT, MAX_GLOBAL_CONSEC_LOSSES,
+    USE_MARTINGALE, TAKE_PROFIT, STOP_LOSS
 )
 
 
@@ -15,6 +22,11 @@ class RiskManager:
     """
     Intelligent risk management system.
     Dynamically adjusts position size and enforces risk constraints.
+    Features:
+    - Kelly Criterion for optimal position sizing
+    - Profit target with trailing stop
+    - Adaptive confidence based on recent performance
+    - Drawdown-based stake reduction
     """
     
     def __init__(self):
@@ -22,11 +34,30 @@ class RiskManager:
         self.current_stake = BASE_STAKE
         self.stake_multiplier = 1.0
         
-        # Martingale settings
-        self.use_martingale = True  # Enable/disable martingale
+        # Martingale settings (controlled by USE_MARTINGALE in .env)
+        self.use_martingale = USE_MARTINGALE
         self.martingale_multiplier = 2.0  # Double after loss
         self.max_martingale_steps = 3  # Max times to double (prevents huge losses)
         self.martingale_step = 0  # Current martingale step
+        
+        # === PROFIT TARGET / STOP LOSS SYSTEM ===
+        self.take_profit = TAKE_PROFIT      # Stop trading after this profit
+        self.stop_loss = STOP_LOSS           # Stop trading after this loss
+        self.session_profit = 0.0            # Running profit for current session
+        self.peak_profit = 0.0               # Highest profit reached (for trailing stop)
+        self.trailing_stop_activated = False  # Has trailing stop been triggered?
+        self.trailing_stop_distance = 0.3    # Trail stop at 30% below peak
+        
+        # === KELLY CRITERION TRACKING ===
+        self.kelly_history = []              # Track last N trades for Kelly calc
+        self.kelly_window = 50               # Number of trades for Kelly calculation
+        self.max_kelly_fraction = 0.25       # Max 25% of bankroll per trade (conservative)
+        self.bankroll = BASE_STAKE * 100     # Virtual bankroll for Kelly sizing
+        
+        # === RECENT PERFORMANCE TRACKING ===
+        self.recent_results = []             # Last 20 trade results (True=win, False=loss)
+        self.recent_window = 20              # Window for adaptive confidence
+        self.adapt_confidence = False        # Whether to adapt confidence
         
         # Daily tracking
         self.daily_profit = 0.0
@@ -34,10 +65,16 @@ class RiskManager:
         self.consecutive_losses = 0
         self.trades_today = 0
         
+        # === GLOBAL consecutive loss tracking (across market switches) ===
+        self.global_consecutive_losses = 0
+        self.max_global_consecutive_losses = MAX_GLOBAL_CONSEC_LOSSES
+        
         # Session tracking
-        self.max_portfolio_value = BASE_STAKE * 100  # Initial max
+        self.max_portfolio_value = BASE_STAKE * 100
         self.current_portfolio_value = self.max_portfolio_value
         self.session_trades = []
+        self.total_wins = 0
+        self.total_losses = 0
         
         # Risk parameters
         self.max_daily_loss = MAX_DAILY_LOSS
@@ -48,31 +85,57 @@ class RiskManager:
         # Trading pause state
         self.trading_paused = False
         self.pause_reason = None
+        self.pause_tick_count = 0
+        self.auto_resume_after_ticks = 500
+        self.learning_system_pause = False
     
     def should_trade(self, confidence: float, market_health: float) -> bool:
         """Check if trading should be allowed."""
-        # Check pause state
         if self.trading_paused:
             agent_logger.log_warning(f"Trading paused: {self.pause_reason}")
             return False
         
-        # Check confidence threshold
         if confidence < self.min_confidence_threshold:
             return False
         
-        # Check market health (use config value)
         if market_health < MIN_MARKET_HEALTH:
             return False
         
-        # Check daily loss limit
         if self.daily_loss >= self.max_daily_loss:
             self._pause_trading("Daily loss limit reached")
             return False
         
-        # Check consecutive losses
         if self.consecutive_losses >= self.max_consecutive_losses:
-            self._pause_trading("Consecutive loss limit reached")
+            self._pause_trading("Consecutive loss limit reached (same market)")
             return False
+        
+        if self.global_consecutive_losses >= self.max_global_consecutive_losses:
+            self._pause_trading(
+                f"Global consecutive loss limit reached: "
+                f"{self.global_consecutive_losses} losses across all markets "
+                f"(max: {self.max_global_consecutive_losses})"
+            )
+            return False
+        
+        # === CHECK PROFIT TARGET ===
+        if self.take_profit > 0 and self.session_profit >= self.take_profit:
+            self._pause_trading(f"Profit target reached: ${self.session_profit:.2f} >= ${self.take_profit}")
+            return False
+        
+        # === CHECK STOP LOSS ===
+        if self.stop_loss > 0 and self.session_profit <= -self.stop_loss:
+            self._pause_trading(f"Stop loss reached: ${self.session_profit:.2f} <= -${self.stop_loss}")
+            return False
+        
+        # === CHECK TRAILING STOP ===
+        if self.trailing_stop_activated:
+            current_drawdown_from_peak = self.peak_profit - self.session_profit
+            if current_drawdown_from_peak >= self.peak_profit * self.trailing_stop_distance:
+                self._pause_trading(
+                    f"Trailing stop triggered: Dropped {current_drawdown_from_peak:.2f} from "
+                    f"peak ${self.peak_profit:.2f} (threshold: {self.trailing_stop_distance*100:.0f}%)"
+                )
+                return False
         
         # Check drawdown
         drawdown = self._calculate_drawdown()
@@ -82,25 +145,78 @@ class RiskManager:
         
         return True
     
-    def calculate_position_size(self, confidence: float, market_volatility: float) -> float:
+    def calculate_position_size(self, confidence: float, market_volatility: float, 
+                                trade_direction: str = None, trend_direction: str = None) -> float:
         """
-        Calculate position size with Martingale strategy.
+        Calculate position size using Kelly Criterion + trend-aware Martingale.
         
-        Martingale: Double stake after each loss to recover losses + profit.
-        Resets to base stake after a win.
+        Kelly Criterion: f* = (p * b - q) / b
+        where p = win probability (confidence), q = 1-p, b = odds (assumed 1:1 for Rise/Fall)
+        
+        For 1:1 binary options: f* = 2p - 1 (optimal fraction of bankroll)
+        We use conservative Kelly (25% of Kelly) for safety.
         """
-        if self.use_martingale and self.martingale_step > 0:
-            # Apply martingale: multiply base stake by 2^step
-            position_size = self.base_stake * (self.martingale_multiplier ** self.martingale_step)
-            agent_logger.log_info(
-                f"Martingale active: Step {self.martingale_step}, "
-                f"Stake: ${position_size:.2f} (Base: ${self.base_stake})"
-            )
+        # === KELLY CRITERION CALCULATION ===
+        # For binary options with ~1:1 payout: Kelly % = 2 * win_rate - 1
+        # Use both historical win rate AND signal confidence
+        
+        historical_win_rate = self._get_recent_win_rate()
+        
+        # Blend historical win rate with current confidence
+        # More weight on history if we have enough samples
+        if self.total_wins + self.total_losses >= 10:
+            blended_confidence = 0.6 * historical_win_rate + 0.4 * confidence
         else:
-            # Normal stake
-            position_size = self.base_stake
+            blended_confidence = confidence  # Rely on signal confidence when new
         
-        # Enforce Deriv minimum stake
+        # Kelly fraction for binary options with ~1:1 payout
+        kelly_fraction = max(0, 2 * blended_confidence - 1)
+        
+        # Use conservative Kelly (25% of full Kelly)
+        conservative_kelly = kelly_fraction * self.max_kelly_fraction
+        
+        # Convert to dollar amount based on bankroll
+        kelly_stake = self.bankroll * conservative_kelly
+        
+        # Apply volatility adjustment: reduce stake in high volatility
+        if market_volatility > 1.0:
+            kelly_stake *= 0.5  # Half position in high volatility
+        elif market_volatility > 0.7:
+            kelly_stake *= 0.75 # 75% in elevated volatility
+        
+        # Apply drawdown adjustment: reduce stake if in drawdown
+        drawdown = self._calculate_drawdown()
+        if drawdown > 5:
+            drawdown_penalty = max(0.5, 1 - (drawdown / self.max_drawdown))
+            kelly_stake *= drawdown_penalty
+            agent_logger.log_info(
+                f"📉 Drawdown adjustment: {drawdown:.1f}% → stake multiplier {drawdown_penalty:.2f}"
+            )
+        
+        # === MARTINGALE OVERRIDE ===
+        if self.use_martingale and self.martingale_step > 0:
+            # Only apply martingale if trading WITH the trend
+            if trade_direction and trend_direction and trade_direction != trend_direction:
+                position_size = max(self.base_stake, kelly_stake)
+                agent_logger.log_warning(
+                    f"⚠️ Martingale step {self.martingale_step} but trading AGAINST trend "
+                    f"(trade={trade_direction}, trend={trend_direction}) — "
+                    f"Using Kelly-based stake ${position_size:.2f} instead of doubled"
+                )
+            else:
+                # Martingale doubles from base, but cap at what Kelly recommends
+                martingale_stake = self.base_stake * (self.martingale_multiplier ** self.martingale_step)
+                position_size = min(martingale_stake, max(kelly_stake, self.base_stake * 4))
+                agent_logger.log_info(
+                    f"🎰 Martingale: Step {self.martingale_step}, "
+                    f"Stake: ${position_size:.2f} (Martingale: ${martingale_stake:.2f}, "
+                    f"Kelly: ${kelly_stake:.2f})"
+                )
+        else:
+            # Use Kelly-based sizing, but never less than base_stake
+            position_size = max(self.base_stake, kelly_stake)
+        
+        # Enforce minimum stake
         position_size = max(position_size, MIN_STAKE_AMOUNT)
         
         # Round to 2 decimal places
@@ -109,8 +225,34 @@ class RiskManager:
         self.current_stake = position_size
         return position_size
     
+    def _get_recent_win_rate(self) -> float:
+        """Get win rate from recent trades (sliding window)."""
+        if not self.recent_results:
+            return 0.5  # Default 50% when no data
+        
+        window = min(len(self.recent_results), self.recent_window)
+        recent = self.recent_results[-window:]
+        wins = sum(1 for r in recent if r)
+        return wins / window if window > 0 else 0.5
+    
+    def _update_kelly_statistics(self, result: bool, profit_loss: float):
+        """Update Kelly Criterion statistics after each trade."""
+        # Track for bankroll management
+        self.bankroll += profit_loss
+        
+        # Add to recent results for win rate calculation
+        self.recent_results.append(result)
+        if len(self.recent_results) > self.recent_window:
+            self.recent_results.pop(0)
+        
+        # Update session profit tracking
+        self.session_profit += profit_loss
+        if self.session_profit > self.peak_profit:
+            self.peak_profit = self.session_profit
+            self.trailing_stop_activated = True  # Activate once we've been profitable
+    
     def record_trade_result(self, stake: float, result: bool, profit_loss: float):
-        """Record trade outcome for risk tracking with Martingale."""
+        """Record trade outcome for risk tracking."""
         self.trades_today += 1
         self.session_trades.append({
             'stake': stake,
@@ -118,27 +260,28 @@ class RiskManager:
             'profit_loss': profit_loss
         })
         
+        # Update Kelly statistics
+        self._update_kelly_statistics(result, profit_loss)
+        
         if result:
-            # WIN: Reset martingale and record profit
             self.daily_profit += abs(profit_loss)
+            self.total_wins += 1
             self.consecutive_losses = 0
+            self.global_consecutive_losses = 0
             
             if self.martingale_step > 0:
                 agent_logger.log_info(
                     f"✓ Martingale WIN! Recovered from {self.martingale_step} losses. "
                     f"Resetting to base stake ${self.base_stake}"
                 )
-                agent_logger.log_info(
-                    f"🔓 MARKET UNLOCK - Martingale recovery complete! "
-                    f"Agent can now switch to better markets if available."
-                )
             
-            self.martingale_step = 0  # Reset martingale on win
+            self.martingale_step = 0
             
         else:
-            # LOSS: Increase martingale step and record loss
             self.daily_loss += abs(profit_loss)
+            self.total_losses += 1
             self.consecutive_losses += 1
+            self.global_consecutive_losses += 1
             
             if self.use_martingale and self.martingale_step < self.max_martingale_steps:
                 self.martingale_step += 1
@@ -148,9 +291,6 @@ class RiskManager:
                     f"Martingale step {self.martingale_step}/{self.max_martingale_steps}. "
                     f"Next stake: ${next_stake:.2f}"
                 )
-                agent_logger.log_warning(
-                    f"🔒 MARKET LOCKED - Must stay on same market to recover losses with Martingale strategy"
-                )
             else:
                 if self.martingale_step >= self.max_martingale_steps:
                     agent_logger.log_warning(
@@ -158,48 +298,116 @@ class RiskManager:
                         f"Resetting to base stake."
                     )
                     self.martingale_step = 0
+            
+            if self.global_consecutive_losses >= self.max_global_consecutive_losses - 1:
+                agent_logger.log_warning(
+                    f"⚠️ GLOBAL LOSS STREAK: {self.global_consecutive_losses}/{self.max_global_consecutive_losses} "
+                    f"losses across all markets. Trading will be stopped if this continues."
+                )
         
-        # Update portfolio value
         self.current_portfolio_value += profit_loss
         self.max_portfolio_value = max(self.max_portfolio_value, self.current_portfolio_value)
         
-        # Log for debugging
+        # Log detailed stats
         agent_logger.log_trade({
             'result': 'WIN' if result else 'LOSS',
             'profit_loss': profit_loss,
             'daily_profit': self.daily_profit,
             'daily_loss': self.daily_loss,
+            'session_profit': self.session_profit,
+            'peak_profit': self.peak_profit,
             'consecutive_losses': self.consecutive_losses,
+            'global_consecutive_losses': self.global_consecutive_losses,
+            'win_rate': f"{self._get_recent_win_rate():.1%}",
+            'kelly_fraction': self._calculate_kelly_fraction(),
+            'bankroll': f"${self.bankroll:.2f}",
             'drawdown': f"{self._calculate_drawdown():.1f}%"
         })
         
-        # Check if pause is needed
         self._check_pause_conditions()
+    
+    def _calculate_kelly_fraction(self) -> float:
+        """Calculate the current Kelly fraction for a 1:1 bet."""
+        win_rate = self._get_recent_win_rate()
+        kelly = max(0, 2 * win_rate - 1)
+        return kelly * self.max_kelly_fraction
+    
+    def set_martingale_enabled(self, enabled: bool):
+        """Enable or disable martingale strategy."""
+        old_value = self.use_martingale
+        self.use_martingale = enabled
+        if enabled != old_value:
+            if not enabled:
+                self.martingale_step = 0
+                agent_logger.log_info("⚙️ Martingale DISABLED by user - reset to base stake")
+            else:
+                agent_logger.log_info("⚙️ Martingale ENABLED by user")
     
     def adapt_risk_parameters(self, recommendations: Dict):
         """Adapt risk parameters based on learning system recommendations."""
         if recommendations.get('adjust_stake'):
-            # Martingale handles stake adjustments automatically
-            agent_logger.log_info("Stake adjustment handled by Martingale system")
+            agent_logger.log_info("Stake adjustment handled by Martingale + Kelly system")
         
         if recommendations.get('pause_trading'):
-            self._pause_trading("Recommended by learning system")
+            self._pause_trading("Recommended by learning system", from_learning_system=True)
         
         if recommendations.get('increase_confidence_threshold'):
-            # Don't increase confidence threshold - let martingale handle risk
-            agent_logger.log_info("Confidence threshold adjustment disabled (Martingale active)")
+            # Dynamically adjust confidence threshold based on recent performance
+            win_rate = self._get_recent_win_rate()
+            if win_rate < 0.4:
+                # Increase threshold when losing - be more selective
+                self.min_confidence_threshold = min(MIN_CONFIDENCE + 0.1, 0.85)
+                agent_logger.log_info(
+                    f"⚠️ Win rate low ({win_rate:.1%}) - Raising confidence threshold "
+                    f"to {self.min_confidence_threshold:.2f}"
+                )
+            elif win_rate > 0.6:
+                # Lower threshold when winning - can be more aggressive
+                self.min_confidence_threshold = max(MIN_CONFIDENCE - 0.05, 0.55)
+                agent_logger.log_info(
+                    f"✅ Win rate high ({win_rate:.1%}) - Lowering confidence threshold "
+                    f"to {self.min_confidence_threshold:.2f}"
+                )
     
     def resume_trading(self):
         """Resume trading after pause."""
         if self.trading_paused:
             self.trading_paused = False
-            agent_logger.log_info("Trading resumed")
+            self.pause_reason = None
+            self.learning_system_pause = False
+            self.pause_tick_count = 0
+            agent_logger.log_info("▶ Trading resumed")
     
-    def _pause_trading(self, reason: str):
+    def check_auto_resume(self, tick_count: int):
+        """Auto-resume learning system pauses after cooldown."""
+        if not self.trading_paused:
+            return
+        
+        if not self.learning_system_pause:
+            return
+        
+        if self.pause_tick_count == 0:
+            self.pause_tick_count = tick_count
+            agent_logger.log_info(
+                f"⏸ Learning system pause started at tick {tick_count}. "
+                f"Will auto-resume after {self.auto_resume_after_ticks} ticks."
+            )
+            return
+        
+        ticks_since_pause = tick_count - self.pause_tick_count
+        if ticks_since_pause >= self.auto_resume_after_ticks:
+            agent_logger.log_info(
+                f"▶ Auto-resuming after learning system pause "
+                f"({ticks_since_pause} ticks elapsed, threshold={self.auto_resume_after_ticks})"
+            )
+            self.resume_trading()
+    
+    def _pause_trading(self, reason: str, from_learning_system: bool = False):
         """Pause trading with reason."""
         if not self.trading_paused:
             self.trading_paused = True
             self.pause_reason = reason
+            self.learning_system_pause = from_learning_system
             agent_logger.log_warning(f"Trading paused: {reason}")
     
     def _calculate_drawdown(self) -> float:
@@ -212,17 +420,31 @@ class RiskManager:
     
     def _check_pause_conditions(self):
         """Check if any pause conditions are met."""
-        # Check daily loss
         if self.daily_loss >= self.max_daily_loss:
             self._pause_trading("Daily loss limit reached")
             return
         
-        # Check consecutive losses (pause instead of reducing stake)
         if self.consecutive_losses >= self.max_consecutive_losses:
             self._pause_trading(f"Consecutive loss limit reached ({self.consecutive_losses})")
             return
         
-        # Check drawdown
+        if self.global_consecutive_losses >= self.max_global_consecutive_losses:
+            self._pause_trading(
+                f"Global consecutive loss limit reached "
+                f"({self.global_consecutive_losses} losses across all markets)"
+            )
+            return
+        
+        # Profit target reached
+        if self.take_profit > 0 and self.session_profit >= self.take_profit:
+            self._pause_trading(f"Profit target reached: ${self.session_profit:.2f}")
+            return
+        
+        # Stop loss reached
+        if self.stop_loss > 0 and self.session_profit <= -self.stop_loss:
+            self._pause_trading(f"Stop loss reached: ${self.session_profit:.2f}")
+            return
+        
         if self._calculate_drawdown() >= self.max_drawdown:
             self._pause_trading("Maximum drawdown reached")
             return
@@ -232,10 +454,14 @@ class RiskManager:
         self.daily_profit = 0.0
         self.daily_loss = 0.0
         self.consecutive_losses = 0
+        self.global_consecutive_losses = 0
         self.trades_today = 0
+        self.session_profit = 0.0
+        self.peak_profit = 0.0
+        self.trailing_stop_activated = False
         self.trading_paused = False
         self.pause_reason = None
-        self.martingale_step = 0  # Reset martingale
+        self.martingale_step = 0
         agent_logger.log_info("Daily stats reset")
     
     def get_risk_metrics(self) -> Dict:
@@ -243,16 +469,26 @@ class RiskManager:
         return {
             'daily_profit': self.daily_profit,
             'daily_loss': self.daily_loss,
+            'session_profit': self.session_profit,
+            'peak_profit': self.peak_profit,
+            'trailing_stop_active': self.trailing_stop_activated,
             'consecutive_losses': self.consecutive_losses,
+            'global_consecutive_losses': self.global_consecutive_losses,
             'trades_today': self.trades_today,
             'current_stake': self.current_stake,
             'base_stake': self.base_stake,
             'martingale_step': self.martingale_step,
             'martingale_active': self.martingale_step > 0,
-            'drawdown': f"{self._calculate_drawdown():.2f}%",
+            'use_martingale': self.use_martingale,
+            'kelly_fraction': self._calculate_kelly_fraction(),
+            'recent_win_rate': self._get_recent_win_rate(),
+            'bankroll': self.bankroll,
+            'drawdown': self._calculate_drawdown(),
+            'max_drawdown': self.max_drawdown,
             'portfolio_value': self.current_portfolio_value,
             'trading_paused': self.trading_paused,
             'pause_reason': self.pause_reason,
+            'adaptive_confidence_threshold': self.min_confidence_threshold,
         }
     
     def get_status_report(self) -> str:
@@ -261,13 +497,19 @@ class RiskManager:
         
         report = f"""
         === Risk Manager Status ===
-        Daily Profit: ${metrics['daily_profit']:.2f}
-        Daily Loss: ${metrics['daily_loss']:.2f}
+        Daily P&L: ${metrics['daily_profit']:.2f} / ${metrics['daily_loss']:.2f}
+        Session P&L: ${metrics['session_profit']:.2f} (Peak: ${metrics['peak_profit']:.2f})
         Consecutive Losses: {metrics['consecutive_losses']}/{self.max_consecutive_losses}
+        Global Consecutive Losses: {metrics['global_consecutive_losses']}/{self.max_global_consecutive_losses}
         Trades Today: {metrics['trades_today']}
-        Drawdown: {metrics['drawdown']}
-        Portfolio Value: ${metrics['portfolio_value']:.2f}
+        Win Rate (recent): {metrics['recent_win_rate']:.1%}
+        Drawdown: {metrics['drawdown']:.1f}%
+        Bankroll: ${metrics['bankroll']:.2f}
+        Kelly Fraction: {metrics['kelly_fraction']:.2%}
         Current Stake: ${metrics['current_stake']:.2f}
+        Martingale: {'ENABLED' if metrics.get('use_martingale', True) else 'DISABLED'} (step {metrics['martingale_step']})
+        Confidence Threshold: {metrics['adaptive_confidence_threshold']:.2f}
+        Trailing Stop: {'ACTIVE' if metrics['trailing_stop_active'] else 'NOT YET'}
         Trading Paused: {metrics['trading_paused']}
         """
         

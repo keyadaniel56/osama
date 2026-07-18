@@ -788,7 +788,15 @@ class IntelligentTradingAgent:
                     )
                     
                     volatility = market_data['features'].get('volatility', 0.5)
-                    position_size = self.risk_manager.calculate_position_size(confidence, volatility)
+                    # Get trend direction for trend-aware position sizing
+                    trend_dir = None
+                    if multi_tf_trend and multi_tf_trend.get('is_trending'):
+                        trend_dir = multi_tf_trend.get('primary_direction')
+                    position_size = self.risk_manager.calculate_position_size(
+                        confidence, volatility, 
+                        trade_direction=trade_direction, 
+                        trend_direction=trend_dir
+                    )
                     
                     self._execute_trade(strategy, market_data, confidence, position_size, ensemble_direction=trade_direction)
                     self.last_trade_tick = self.tick_count
