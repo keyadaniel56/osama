@@ -1,7 +1,7 @@
 """
 Risk management system - dynamic risk sizing, drawdown protection, position management.
 Features:
-- Kelly Criterion position sizing
+- Kelly Criterion position sizing (as multiplier on base stake)
 - Profit target / trailing stop
 - Adaptive confidence thresholds
 - Recent performance smoothing
@@ -23,7 +23,7 @@ class RiskManager:
     Intelligent risk management system.
     Dynamically adjusts position size and enforces risk constraints.
     Features:
-    - Kelly Criterion for optimal position sizing
+    - Kelly Criterion for optimal position sizing (as multiplier on base stake)
     - Profit target with trailing stop
     - Adaptive confidence based on recent performance
     - Drawdown-based stake reduction
@@ -49,10 +49,12 @@ class RiskManager:
         self.trailing_stop_distance = 0.3    # Trail stop at 30% below peak
         
         # === KELLY CRITERION TRACKING ===
+        # Kelly is applied as a MULTIPLIER on top of the user's base_stake.
+        # For example, if base_stake=$0.35 and Kelly suggests 0.14× → position=$0.35*1.14=$0.40
+        # This ensures the bot starts at the user's configured stake and adjusts slightly.
         self.kelly_history = []              # Track last N trades for Kelly calc
         self.kelly_window = 50               # Number of trades for Kelly calculation
-        self.max_kelly_fraction = 0.25       # Max 25% of bankroll per trade (conservative)
-        self.bankroll = BASE_STAKE * 100     # Virtual bankroll for Kelly sizing
+        self.kelly_base_multiplier = 1.0     # Multiplier applied to base_stake (1.0 = use base_stake as-is)
         
         # === RECENT PERFORMANCE TRACKING ===
         self.recent_results = []             # Last 20 trade results (True=win, False=loss)
@@ -148,22 +150,21 @@ class RiskManager:
     def calculate_position_size(self, confidence: float, market_volatility: float, 
                                 trade_direction: str = None, trend_direction: str = None) -> float:
         """
-        Calculate position size using Kelly Criterion + trend-aware Martingale.
+        Calculate position size using Kelly Criterion applied as a multiplier
+        on the user's configured base stake.
         
         Kelly Criterion: f* = (p * b - q) / b
         where p = win probability (confidence), q = 1-p, b = odds (assumed 1:1 for Rise/Fall)
         
-        For 1:1 binary options: f* = 2p - 1 (optimal fraction of bankroll)
-        We use conservative Kelly (25% of Kelly) for safety.
-        """
-        # === KELLY CRITERION CALCULATION ===
-        # For binary options with ~1:1 payout: Kelly % = 2 * win_rate - 1
-        # Use both historical win rate AND signal confidence
+        For 1:1 binary options: f* = 2p - 1 (optimal fraction)
         
+        KEY CHANGE: Kelly is a PERCENTAGE MULTIPLIER on base_stake, not a fraction of a
+        virtual bankroll. This ensures the bot starts at the user's configured stake
+        and only makes small adjustments based on performance.
+        """
         historical_win_rate = self._get_recent_win_rate()
         
         # Blend historical win rate with current confidence
-        # More weight on history if we have enough samples
         if self.total_wins + self.total_losses >= 10:
             blended_confidence = 0.6 * historical_win_rate + 0.4 * confidence
         else:
@@ -173,22 +174,30 @@ class RiskManager:
         kelly_fraction = max(0, 2 * blended_confidence - 1)
         
         # Use conservative Kelly (25% of full Kelly)
-        conservative_kelly = kelly_fraction * self.max_kelly_fraction
+        conservative_kelly = kelly_fraction * 0.25
         
-        # Convert to dollar amount based on bankroll
-        kelly_stake = self.bankroll * conservative_kelly
+        # Calculate Kelly-based multiplier on base_stake (range: 1.0 to ~1.25)
+        # This means: Kelly adjusts stake by at most ~25% above base_stake
+        # Example: base_stake=$0.35, kelly_mult=1.14 → position=$0.40
+        kelly_multiplier = 1.0 + conservative_kelly
+        
+        # Start from the user's configured base_stake
+        position_size = self.base_stake
+        
+        # Apply Kelly multiplier (slight adjustment above base)
+        position_size *= kelly_multiplier
         
         # Apply volatility adjustment: reduce stake in high volatility
         if market_volatility > 1.0:
-            kelly_stake *= 0.5  # Half position in high volatility
+            position_size *= 0.5  # Half position in high volatility
         elif market_volatility > 0.7:
-            kelly_stake *= 0.75 # 75% in elevated volatility
+            position_size *= 0.75 # 75% in elevated volatility
         
         # Apply drawdown adjustment: reduce stake if in drawdown
         drawdown = self._calculate_drawdown()
         if drawdown > 5:
             drawdown_penalty = max(0.5, 1 - (drawdown / self.max_drawdown))
-            kelly_stake *= drawdown_penalty
+            position_size *= drawdown_penalty
             agent_logger.log_info(
                 f"📉 Drawdown adjustment: {drawdown:.1f}% → stake multiplier {drawdown_penalty:.2f}"
             )
@@ -197,24 +206,22 @@ class RiskManager:
         if self.use_martingale and self.martingale_step > 0:
             # Only apply martingale if trading WITH the trend
             if trade_direction and trend_direction and trade_direction != trend_direction:
-                position_size = max(self.base_stake, kelly_stake)
+                # Trading against trend - use Kelly-based position, not doubled
                 agent_logger.log_warning(
                     f"⚠️ Martingale step {self.martingale_step} but trading AGAINST trend "
                     f"(trade={trade_direction}, trend={trend_direction}) — "
-                    f"Using Kelly-based stake ${position_size:.2f} instead of doubled"
+                    f"Using base-based stake ${position_size:.2f} instead of doubled"
                 )
             else:
-                # Martingale doubles from base, but cap at what Kelly recommends
+                # Martingale doubles from base, but cap at reasonable level
                 martingale_stake = self.base_stake * (self.martingale_multiplier ** self.martingale_step)
-                position_size = min(martingale_stake, max(kelly_stake, self.base_stake * 4))
+                # Use the higher of martingale and Kelly-based, but cap at 4× base
+                position_size = max(position_size, martingale_stake)
+                position_size = min(position_size, self.base_stake * 4)
                 agent_logger.log_info(
                     f"🎰 Martingale: Step {self.martingale_step}, "
-                    f"Stake: ${position_size:.2f} (Martingale: ${martingale_stake:.2f}, "
-                    f"Kelly: ${kelly_stake:.2f})"
+                    f"Stake: ${position_size:.2f} (Martingale: ${martingale_stake:.2f})"
                 )
-        else:
-            # Use Kelly-based sizing, but never less than base_stake
-            position_size = max(self.base_stake, kelly_stake)
         
         # Enforce minimum stake
         position_size = max(position_size, MIN_STAKE_AMOUNT)
@@ -223,6 +230,14 @@ class RiskManager:
         position_size = round(position_size, 2)
         
         self.current_stake = position_size
+        
+        # Log for debugging
+        if position_size != self.base_stake:
+            agent_logger.log_info(
+                f"💰 Position size: ${position_size:.2f} (base=${self.base_stake:.2f}, "
+                f"kelly_mult={kelly_multiplier:.3f}, volatility_adj={market_volatility:.2f})"
+            )
+        
         return position_size
     
     def _get_recent_win_rate(self) -> float:
@@ -237,9 +252,6 @@ class RiskManager:
     
     def _update_kelly_statistics(self, result: bool, profit_loss: float):
         """Update Kelly Criterion statistics after each trade."""
-        # Track for bankroll management
-        self.bankroll += profit_loss
-        
         # Add to recent results for win rate calculation
         self.recent_results.append(result)
         if len(self.recent_results) > self.recent_window:
@@ -320,17 +332,16 @@ class RiskManager:
             'global_consecutive_losses': self.global_consecutive_losses,
             'win_rate': f"{self._get_recent_win_rate():.1%}",
             'kelly_fraction': self._calculate_kelly_fraction(),
-            'bankroll': f"${self.bankroll:.2f}",
             'drawdown': f"{self._calculate_drawdown():.1f}%"
         })
         
         self._check_pause_conditions()
     
     def _calculate_kelly_fraction(self) -> float:
-        """Calculate the current Kelly fraction for a 1:1 bet."""
+        """Calculate the current Kelly fraction for a 1:1 bet (as multiplier)."""
         win_rate = self._get_recent_win_rate()
         kelly = max(0, 2 * win_rate - 1)
-        return kelly * self.max_kelly_fraction
+        return kelly * 0.25
     
     def set_martingale_enabled(self, enabled: bool):
         """Enable or disable martingale strategy."""
@@ -482,7 +493,6 @@ class RiskManager:
             'use_martingale': self.use_martingale,
             'kelly_fraction': self._calculate_kelly_fraction(),
             'recent_win_rate': self._get_recent_win_rate(),
-            'bankroll': self.bankroll,
             'drawdown': self._calculate_drawdown(),
             'max_drawdown': self.max_drawdown,
             'portfolio_value': self.current_portfolio_value,
@@ -504,9 +514,7 @@ class RiskManager:
         Trades Today: {metrics['trades_today']}
         Win Rate (recent): {metrics['recent_win_rate']:.1%}
         Drawdown: {metrics['drawdown']:.1f}%
-        Bankroll: ${metrics['bankroll']:.2f}
-        Kelly Fraction: {metrics['kelly_fraction']:.2%}
-        Current Stake: ${metrics['current_stake']:.2f}
+        Current Stake: ${metrics['current_stake']:.2f} (base: ${metrics['base_stake']:.2f})
         Martingale: {'ENABLED' if metrics.get('use_martingale', True) else 'DISABLED'} (step {metrics['martingale_step']})
         Confidence Threshold: {metrics['adaptive_confidence_threshold']:.2f}
         Trailing Stop: {'ACTIVE' if metrics['trailing_stop_active'] else 'NOT YET'}

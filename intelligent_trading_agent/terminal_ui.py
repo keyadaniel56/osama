@@ -367,7 +367,6 @@ class TerminalUI:
         dd = d.get('drawdown', 0)
         dd_color = 'red' if dd > 10 else 'yellow' if dd > 5 else 'green'
         lines.append(f"  │ Kelly: {kelly:.1%}  |  "
-                     f"Bankroll: ${d.get('bankroll', 0):.2f}  |  "
                      f"Drawdown: {self._color(f'{dd:.1f}%', dd_color)}")
         
         # Adaptive threshold
