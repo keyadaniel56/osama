@@ -1,0 +1,20 @@
+{
+  "agent_id": "agent_20260720_092430",
+  "total_trades": 1,
+  "win_count": 0,
+  "loss_count": 0,
+  "daily_profit": 0.0,
+  "trades": [
+    {
+      "strategy": "rise_fall",
+      "contract_type": "PUT",
+      "prediction": "FALL",
+      "market_state": "ranging",
+      "entry_price": 522.2,
+      "entry_confidence": 0.8,
+      "position_size": 5.25,
+      "reasoning": "Price at lower BB (pos=0.2), RSI=34.7 - expecting mean reversion UP + low volatility (favorable)",
+      "timestamp": "2026-07-20T09:31:17.881153"
+    }
+  ]
+}

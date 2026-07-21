@@ -1,0 +1,20 @@
+{
+  "agent_id": "agent_20260712_072106",
+  "total_trades": 1,
+  "win_count": 0,
+  "loss_count": 0,
+  "daily_profit": 0.0,
+  "trades": [
+    {
+      "strategy": "rise_fall",
+      "contract_type": "CALL",
+      "prediction": "RISE",
+      "market_state": "ranging",
+      "entry_price": 461.69,
+      "entry_confidence": 0.760270793107835,
+      "position_size": 0.35,
+      "reasoning": "Price at upper BB (pos=0.9), RSI=66.7 - expecting mean reversion DOWN + low volatility (favorable)",
+      "timestamp": "2026-07-12T07:30:24.661279"
+    }
+  ]
+}

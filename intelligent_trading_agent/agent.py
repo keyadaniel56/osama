@@ -26,6 +26,7 @@ from multi_market_monitor import MultiMarketMonitor
 from features.pattern_recognition import ChartPatternRecognizer
 from decision_engine import DecisionEngine, RiskAdjustedDecision
 from terminal_ui import TerminalUI
+from reinforcement_learning import ReinforcementLearningSystem
 from config import (
     DERIV_API_TOKEN, DERIV_APP_ID, DEFAULT_SYMBOL,
     BASE_STAKE, MAX_DAILY_LOSS, MAX_CONSEC_LOSSES,
@@ -110,6 +111,10 @@ class IntelligentTradingAgent:
         self.ensemble_confidence = 0.0
         self.current_signals = {}
         
+        # Reinforcement Learning system (AI brain that learns from market outcomes)
+        self.rl_system = ReinforcementLearningSystem(initial_stake=BASE_STAKE)
+        self.rl_decision_bias = 1.0  # How much to weight RL vs ensemble (starts at 1.0, grows with training)
+        
         agent_logger.log_info(f"Initialized IntelligentTradingAgent: {self.agent_id}")
         agent_logger.log_info("Subsystems loaded:")
         agent_logger.log_info("  - Market Analyzer (feature extraction, state detection)")
@@ -169,6 +174,11 @@ class IntelligentTradingAgent:
         # Disconnect from Deriv
         if self.client:
             self.client.disconnect()
+        
+        # Save RL system state
+        if hasattr(self, 'rl_system'):
+            self.rl_system.save()
+            agent_logger.log_info("💾 RL system state saved on shutdown")
         
         self._save_session_data()
     
@@ -544,34 +554,47 @@ class IntelligentTradingAgent:
                 rsi = indicators.get('rsi', 50)
                 bb_position = indicators.get('bb_position', 0.5)
                 
-                # Block trading only at EXTREME RSI levels (not moderate ones)
-                # RSI 0-15 = severely oversold (likely to bounce)
-                # RSI 85-100 = severely overbought (likely to reverse)
-                # Moderate RSI (15-85) is fine for trend following
-                if rsi >= 85:
-                    if self.tick_count % 100 == 0:
-                        agent_logger.log_warning(
-                            f"⚠️ EXTREME OVERBOUGHT: RSI={rsi:.1f} - Waiting for stabilization (threshold: 85)"
-                        )
-                    time.sleep(0.05)
-                    continue
+                # === INTELLIGENT MEAN REVERSION GUARD ===
+                # Still protect against trading AGAINST a strong trend at extremes,
+                # but now allow the ML model and pattern recognition to override
+                # when they detect a genuine reversal opportunity.
+                #
+                # The ML model is trained on actual price movements over the full
+                # contract duration. If it predicts a reversal at extremes, it has
+                # learned that pattern from the data and should be trusted.
+                #
+                # Only block when:
+                # 1. RSI is EXTREME (>85 or <15) AND
+                # 2. There's a clear multi-timeframe trend AND
+                # 3. ML prediction CONFLICTS with the reversal (i.e., ML also says trend continues)
+                has_ml_signal = ml_prediction_direction not in (None, 'HOLD')
                 
-                if rsi <= 15:
-                    if self.tick_count % 100 == 0:
-                        agent_logger.log_warning(
-                            f"⚠️ EXTREME OVERSOLD: RSI={rsi:.1f} - Waiting for stabilization (threshold: 15)"
-                        )
-                    time.sleep(0.05)
-                    continue
-                
-                # BB threshold - only block at very extreme edges
-                if bb_position >= 0.95 or bb_position <= 0.05:
-                    if self.tick_count % 100 == 0:
-                        agent_logger.log_warning(
-                            f"⚠️ EXTREME BB position: {bb_position:.2f} - Price near band edge, waiting for mean reversion"
-                        )
-                    time.sleep(0.05)
-                    continue
+                if (rsi > 80 or rsi < 20) or (bb_position > 0.90 or bb_position < 0.10):
+                    has_trend_data = multi_tf_trend is not None and multi_tf_trend.get('is_trending')
+                    
+                    if rsi > 80 or bb_position > 0.90:
+                        if has_trend_data and multi_tf_trend.get('primary_direction') == 'up':
+                            # ML also says UP - this means the ML is predicting the trend continues
+                            # even at overbought levels. Don't fight both trend AND ML.
+                            if has_ml_signal and ml_prediction_direction == 'UP':
+                                if self.tick_count % 50 == 0:
+                                    agent_logger.log_warning(
+                                        f"⚠️ OVERBOUGHT ({rsi:.0f}, BB={bb_position:.2f}) with trend+ML=UP — "
+                                        f"Not taking contrarian PUT. All evidence says trend continues."
+                                    )
+                                time.sleep(0.05)
+                                continue
+                    
+                    if rsi < 20 or bb_position < 0.10:
+                        if has_trend_data and multi_tf_trend.get('primary_direction') == 'down':
+                            if has_ml_signal and ml_prediction_direction == 'DOWN':
+                                if self.tick_count % 50 == 0:
+                                    agent_logger.log_warning(
+                                        f"⚠️ OVERSOLD ({rsi:.0f}, BB={bb_position:.2f}) with trend+ML=DOWN — "
+                                        f"Not taking contrarian CALL. All evidence says trend continues."
+                                    )
+                                time.sleep(0.05)
+                                continue
                 
                 # PATTERN CONTRADICTION CHECK: Only block if patterns are EQUALLY contradictory
                 # (same number of bullish and bearish patterns with similar confidence)
@@ -768,6 +791,53 @@ class IntelligentTradingAgent:
                 ticks_since_last_trade = self.tick_count - self.last_trade_tick
                 cooldown_ready = ticks_since_last_trade >= self.trade_cooldown
                 
+                # === RL SYSTEM: Learn from skipped trades ===
+                # If we skipped, give the RL system a chance to learn from price movement
+                features_now = market_data.get('features', {})
+                if hasattr(self, 'rl_system'):
+                    self.rl_system.learn_from_skip(features_now)
+                
+                # === RL SYSTEM: Decide whether to trade ===
+                # The RL system provides an ADVISORY signal: should we trade at all?
+                # CRITICAL FIX: RL is used as a confidence ADJUSTMENT, not a hard veto.
+                # Previously RL acted as a hard block (continue on skip), which caused
+                # the bot to never trade once the RL learned a "never trade" policy
+                # from early losses. Now RL only nudges confidence down, and the
+                # decision engine's ensemble signal has final say.
+                rl_q_skip = 0.0
+                rl_q_take = 0.0
+                rl_block_desired = False
+                if hasattr(self, 'rl_system') and self.tick_count >= WARMUP_TICKS:
+                    rl_should_trade, rl_q_skip, rl_q_take = self.rl_system.decide(indicators)
+                    rl_block_desired = not rl_should_trade
+                    self.rl_system.record_trade_execution(1 if not rl_block_desired else 0)
+                    
+                    # Log RL decision periodically
+                    if self.tick_count % 50 == 0:
+                        agent_logger.log_info(
+                            f"🧠 RL Decision: {'SKIP' if rl_block_desired else 'TRADE'} "
+                            f"(Q_skip={rl_q_skip:.3f}, Q_trade={rl_q_take:.3f}, "
+                            f"advantage={rl_q_take - rl_q_skip:.3f})"
+                        )
+                
+                # FIX: RL is now advisory, not a hard veto.
+                # If RL wants to skip, we reduce confidence instead of blocking entirely.
+                # This ensures the bot can still trade when the decision engine is confident,
+                # while RL's "bad feeling" about the market still reduces risk.
+                if rl_block_desired and self.tick_count >= WARMUP_TICKS:
+                    # Reduce confidence by an amount proportional to RL's certainty
+                    rl_certainty = min(abs(rl_q_take - rl_q_skip), 1.0)  # 0-1 range
+                    confidence_penalty = 0.15 + rl_certainty * 0.25  # 15-40% penalty
+                    original_confidence = confidence
+                    confidence = max(confidence - confidence_penalty, 0.0)
+                    
+                    if self.tick_count % 50 == 0:
+                        agent_logger.log_info(
+                            f"🧠 RL ADVISORY: Skip recommended (certainty={rl_certainty:.2f}) — "
+                            f"reducing confidence from {original_confidence:.2f} to {confidence:.2f} "
+                            f"(penalty={confidence_penalty:.2f}). Not blocking — ensemble has final say."
+                        )
+                
                 # Step 11: Execute trade based on ensemble decision
                 # The ensemble combines:
                 # - ML model (trained on actual 5-minute price movements)
@@ -812,7 +882,8 @@ class IntelligentTradingAgent:
                         trend_direction=trend_dir
                     )
                     
-                    self._execute_trade(strategy, market_data, confidence, position_size, ensemble_direction=trade_direction)
+                    self._execute_trade(strategy, market_data, confidence, position_size, 
+                                       ensemble_direction=trade_direction, multi_tf_trend=multi_tf_trend)
                     self.last_trade_tick = self.tick_count
                 else:
                     # Log why we're not trading (more frequently for debugging)
@@ -1313,6 +1384,22 @@ class IntelligentTradingAgent:
             'duration': 300,  # 5 minutes in seconds
         })
         
+        # === RL SYSTEM: Learn from trade result ===
+        if hasattr(self, 'rl_system'):
+            # Get the features at entry for RL learning
+            entry_features = trade_info.get('market_data', {}).get('features', {})
+            self.rl_system.record_trade_result(profit, is_win, entry_features)
+            
+            # Log RL stats periodically
+            if self.total_trades % 10 == 0:
+                rl_stats = self.rl_system.get_stats()
+                agent_logger.log_info(
+                    f"🧠 RL Status: trained={rl_stats['rl_trained']} batches | "
+                    f"ε={rl_stats['rl_epsilon']:.3f} | "
+                    f"Stake: ${rl_stats['stake']:.2f} (×{rl_stats['stake_growth']}) | "
+                    f"Profit: ${rl_stats['total_profit']:.2f}"
+                )
+        
         # CRITICAL: Remove from active contracts
         if contract_id in self.active_contracts:
             del self.active_contracts[contract_id]
@@ -1361,7 +1448,7 @@ class IntelligentTradingAgent:
         
         return False
     
-    def _execute_trade(self, strategy: str, market_data: Dict, confidence: float, position_size: float, ensemble_direction: str = None):
+    def _execute_trade(self, strategy: str, market_data: Dict, confidence: float, position_size: float, ensemble_direction: str = None, multi_tf_trend: Optional[Dict] = None):
         """Execute a trade using the selected strategy with ML enhancement and ensemble direction."""
         try:
             # Get actual prediction from the strategy (technical analysis)
@@ -1454,6 +1541,32 @@ class IntelligentTradingAgent:
             macd = market_data['features'].get('macd_histogram', 0)
             bb_position = market_data['features'].get('bb_position', 0.5)
             
+            # Generate proper reasoning that matches the actual trade direction
+            # (not the strategy's raw reasoning, which may contradict the ensemble)
+            if ensemble_direction:
+                if final_prediction == 'UP':
+                    direction_reasoning = f"Ensemble signal UP (conf={final_confidence:.2f})"
+                    if rsi < 30:
+                        direction_reasoning += f" | RSI oversold ({rsi:.0f})"
+                    elif bb_position < 0.2:
+                        direction_reasoning += f" | BB lower band ({bb_position:.2f})"
+                    elif rsi > 55:
+                        direction_reasoning += f" | RSI bullish ({rsi:.0f})"
+                    if multi_tf_trend and multi_tf_trend.get('is_trending'):
+                        direction_reasoning += f" | Trend: {multi_tf_trend['primary_direction']}"
+                else:  # DOWN
+                    direction_reasoning = f"Ensemble signal DOWN (conf={final_confidence:.2f})"
+                    if rsi > 70:
+                        direction_reasoning += f" | RSI overbought ({rsi:.0f})"
+                    elif bb_position > 0.8:
+                        direction_reasoning += f" | BB upper band ({bb_position:.2f})"
+                    elif rsi < 45:
+                        direction_reasoning += f" | RSI bearish ({rsi:.0f})"
+                    if multi_tf_trend and multi_tf_trend.get('is_trending'):
+                        direction_reasoning += f" | Trend: {multi_tf_trend['primary_direction']}"
+            else:
+                direction_reasoning = signal.reasoning
+            
             # Log comprehensive trade information
             agent_logger.log_info("=" * 80)
             agent_logger.log_info(f"🎯 PLACING TRADE #{self.total_trades + 1}")
@@ -1466,6 +1579,7 @@ class IntelligentTradingAgent:
             agent_logger.log_info(f"ML Samples: {ml_stats['training_samples']} | Predictions: {ml_stats['predictions_made']}")
             agent_logger.log_info(f"Win/Loss Record: {self.win_count}W / {self.loss_count}L ({self.win_count/(self.win_count+self.loss_count)*100 if (self.win_count+self.loss_count) > 0 else 0:.1f}%)")
             agent_logger.log_info(f"Consecutive Losses: {self.consecutive_losses}")
+            agent_logger.log_info(f"Reasoning: {direction_reasoning}")
             agent_logger.log_info("=" * 80)
             
             # Log trade execution
@@ -1482,7 +1596,7 @@ class IntelligentTradingAgent:
                 'market_state': self.current_market_state,
                 'market_health': self.market_health,
                 'position_size': position_size,
-                'reasoning': signal.reasoning,
+                'reasoning': direction_reasoning,
                 'timestamp': datetime.now().isoformat()
             })
             

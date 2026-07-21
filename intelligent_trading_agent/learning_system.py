@@ -165,8 +165,37 @@ class LearningSystem:
         recent_profit = sum(t['profit'] for t in recent_trades)
         recent_win_rate = sum(1 for t in recent_trades if t['win']) / len(recent_trades)
         
+        # Ensure we only use trades from the CURRENT session for pausing decisions
+        # Check if any trades have a timestamp from today
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        recent_timestamps = [
+            t.get('timestamp', '') for t in recent_trades
+            if isinstance(t.get('timestamp', ''), str)
+        ]
+        has_current_session_trades = any(
+            ts.startswith(now.strftime('%Y%m%d')) or 
+            ts.startswith(now.strftime('%Y-%m-%d'))
+            for ts in recent_timestamps
+        )
+        
+        # Only recommend pausing if we have actual trades from today's session
+        if not has_current_session_trades:
+            return recommendations
+        
+        # Only consider for pausing if we have at least 10 recent trades (enough data)
+        # This prevents pausing on just a few trades that happened to be unlucky
+        if len(recent_trades) < 10:
+            return recommendations
+        
+        # Require a LARGER sample before recommending pause
+        # Small samples are unreliable - don't pause on just 5-9 trades
+        # Only pause if win rate is significantly low AND we have meaningful data
+        if recent_win_rate >= 0.40:
+            return recommendations
+        
         # Reduce stake if losing
-        if recent_profit < 0 and recent_win_rate < 0.45:
+        if recent_profit < 0 and recent_win_rate < 0.40:
             recommendations['adjust_stake'] = True
             recommendations['new_stake_multiplier'] = 0.75
             recommendations['pause_trading'] = True

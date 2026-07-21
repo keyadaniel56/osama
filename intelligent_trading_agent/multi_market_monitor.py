@@ -25,7 +25,12 @@ class MarketOpportunity:
         self.score = self._calculate_score()
     
     def _calculate_score(self) -> float:
-        """Calculate opportunity score (0-100)."""
+        """Calculate opportunity score (0-100).
+        
+        Key change: Strongly prioritize markets in a CLEAR TREND (trending_up or trending_down).
+        Ranging and volatile markets get significantly lower scores so the bot
+        only trades one market with the strongest trend.
+        """
         score = 50.0  # Base score
         
         # Confidence component
@@ -34,13 +39,25 @@ class MarketOpportunity:
         # Health component
         score += (self.health / 100) * 20
         
-        # Pattern confirmation bonus
+        # Trend dominance bonus (key improvement: trending markets get big boost)
+        if 'trending' in self.market_state:
+            score += 20  # Major bonus for trending markets
+        elif self.market_state == 'ranging':
+            score -= 15  # Penalty for ranging (direction unclear)
+        elif self.market_state == 'volatile':
+            score -= 20  # Heavy penalty for volatile (unreliable signals)
+        
+        # Pattern confirmation bonus (only if patterns align with trend)
         if self.patterns:
             pattern_count = len(self.patterns)
-            score += min(pattern_count * 5, 10)  # Max 10 points
+            # If trending with patterns → big bonus; if ranging → small bonus
+            if 'trending' in self.market_state:
+                score += min(pattern_count * 8, 16)  # Max 16 points for patterns in trend
+            else:
+                score += min(pattern_count * 2, 4)   # Minimal bonus in non-trending
         
-        # Cap at 100
-        return min(score, 100.0)
+        # Cap at 100, floor at 0
+        return max(0.0, min(score, 100.0))
     
     def __repr__(self) -> str:
         return f"Opportunity({self.symbol}: {self.strategy} @ {self.confidence:.0%}, score={self.score:.1f})"

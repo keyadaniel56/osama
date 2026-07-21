@@ -3,7 +3,7 @@ Dashboard server - provides real-time data API for web UI.
 Run alongside agent.py for beautiful monitoring.
 """
 
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify, render_template_string, request
 from flask_cors import CORS
 import json
 import os
@@ -14,6 +14,7 @@ CORS(app)
 
 # Shared state file (updated by agent.py)
 STATE_FILE = 'dashboard_state.json'
+LOG_FILE = 'logs/agent.log'
 
 def get_agent_state():
     """Read current agent state from file."""
@@ -88,16 +89,36 @@ def api_resume():
 @app.route('/api/reset-daily', methods=['POST'])
 def api_reset_daily():
     """Reset daily stats."""
-    state = get_agent_state()
-    state['daily_profit'] = 0.0
-    state['daily_loss'] = 0.0
-    state['win_count'] = 0
-    state['loss_count'] = 0
-    state['consecutive_losses'] = 0
-    state['recent_trades'] = []
-    state['pnl_history'] = []
-    save_state(state)
-    return jsonify({'status': 'reset'})
+    save_command({'action': 'reset_stats'})
+    return jsonify({'status': 'reset signal sent'})
+
+@app.route('/api/logs')
+def api_logs():
+    """Get recent logs."""
+    if not os.path.exists(LOG_FILE):
+        return jsonify({'logs': ['Log file not found']})
+    
+    try:
+        with open(LOG_FILE, 'r') as f:
+            # Read last 100 lines
+            lines = f.readlines()
+            return jsonify({'logs': lines[-100:]})
+    except:
+        return jsonify({'logs': ['Error reading logs']})
+
+@app.route('/api/settings', methods=['POST'])
+def api_settings():
+    """Update agent settings."""
+    settings = request.json
+    save_command({'settings': settings})
+    return jsonify({'status': 'settings updated', 'received': settings})
+
+@app.route('/api/action', methods=['POST'])
+def api_action():
+    """Perform a specific action."""
+    data = request.json
+    save_command(data)
+    return jsonify({'status': 'action triggered', 'received': data})
 
 @app.route('/api/stop', methods=['POST'])
 def api_stop():
@@ -106,6 +127,36 @@ def api_stop():
     with open('STOP_SIGNAL', 'w') as f:
         f.write('STOP')
     return jsonify({'status': 'stop signal sent'})
+
+def save_command(command):
+    """Save command to file for agent to pick up."""
+    COMMAND_FILE = 'dashboard_commands.json'
+    existing_commands = {}
+    if os.path.exists(COMMAND_FILE):
+        try:
+            with open(COMMAND_FILE, 'r') as f:
+                existing_commands = json.load(f)
+        except:
+            pass
+    
+    # Merge commands
+    if 'settings' in command:
+        if 'settings' not in existing_commands:
+            existing_commands['settings'] = {}
+        existing_commands['settings'].update(command['settings'])
+    
+    if 'action' in command:
+        existing_commands['action'] = command['action']
+        if 'symbol' in command:
+            existing_commands['symbol'] = command['symbol']
+        if 'direction' in command:
+            existing_commands['direction'] = command['direction']
+
+    try:
+        with open(COMMAND_FILE, 'w') as f:
+            json.dump(existing_commands, f, indent=2)
+    except Exception as e:
+        print(f"Error saving command: {e}")
 
 def save_state(state):
     """Save state to file."""

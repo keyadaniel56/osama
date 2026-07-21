@@ -26,10 +26,10 @@ class DecisionEngine:
     """
     
     def __init__(self):
-        self.ml_weight = 0.20        # ML model confidence weight
-        self.trend_weight = 0.40     # Multi-timeframe trend weight (HIGHEST - primary)
+        self.ml_weight = 0.35        # ML model confidence weight (INCREASED - AI learns from market)
+        self.trend_weight = 0.30     # Multi-timeframe trend weight
         self.pattern_weight = 0.25   # Pattern recognition weight (including candle)
-        self.indicator_weight = 0.15 # Technical indicators weight
+        self.indicator_weight = 0.10 # Technical indicators weight (REDUCED - least reliable alone)
         
         # Thresholds for confidence
         self.min_ensemble_confidence = MIN_CONFIDENCE

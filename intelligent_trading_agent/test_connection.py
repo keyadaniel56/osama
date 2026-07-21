@@ -1,5 +1,5 @@
 """
-Quick test to verify Deriv API connection.
+Quick test to verify Deriv API connection using the new OTP-based auth flow.
 """
 
 import time
@@ -7,7 +7,9 @@ from deriv_client import DerivClient
 from config import DERIV_API_TOKEN, DERIV_APP_ID
 
 def test_connection():
-    print("Testing Deriv API connection...")
+    print("Testing Deriv API connection (new OTP-based auth)...")
+    print(f"Using App ID: {DERIV_APP_ID}")
+    print(f"Using Token: {DERIV_API_TOKEN[:20]}...")
     
     client = DerivClient(DERIV_APP_ID, DERIV_API_TOKEN, "R_100")
     
@@ -24,7 +26,7 @@ def test_connection():
     try:
         client.connect()
         print("✓ Connected successfully!")
-        print("✓ Authorized!")
+        print("✓ Authorized via OTP!")
         print("Receiving ticks... (Press Ctrl+C to stop)")
         
         # Wait for some ticks

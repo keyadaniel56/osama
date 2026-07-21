@@ -267,7 +267,12 @@ class ChartPatternRecognizer:
         self.candle_count = 0
     
     def add_price(self, price: float):
-        """Add price to pattern recognizer with candle formation."""
+        """Add price to pattern recognizer with candle formation.
+        
+        For synthetic indices (R_10..R_100), ticks arrive ~1/sec so we form
+        a candle every 3 ticks to get enough candles for pattern detection
+        within the 10-minute contract window.
+        """
         self.prices.append(price)
         self.multi_tf_analyzer.add_price(price)
         
@@ -282,8 +287,9 @@ class ChartPatternRecognizer:
             candle['close'] = price
             candle['ticks'] += 1
             
-            # Every 5 ticks, form a complete candle and learn from it
-            if candle['ticks'] >= 5:
+            # Every 3 ticks, form a complete candle and learn from it
+            # Faster candle formation = more pattern detections in a 10-min window
+            if candle['ticks'] >= 3:
                 new_candle = Candle(
                     open_p=candle['open'],
                     high=candle['high'],
@@ -602,11 +608,18 @@ class ChartPatternRecognizer:
         }
     
     def detect_flag(self) -> Optional[Dict]:
-        """Detect flag pattern (continuation pattern)."""
+        """Detect flag pattern (continuation pattern).
+        
+        For synthetic indices (R_10..R_100) with prices ~4884, we use
+        PERCENTAGE-based thresholds instead of absolute price differences.
+        """
         if len(self.prices) < 15:
             return None
         
         prices = list(self.prices)[-15:]
+        avg_price = np.mean(prices)
+        if avg_price == 0:
+            return None
         
         # Flag: low volatility after strong trend
         recent_volatility = np.std(prices[-5:])
@@ -615,22 +628,23 @@ class ChartPatternRecognizer:
         if prior_volatility == 0 or recent_volatility >= prior_volatility:
             return None
         
-        # Strong trend before consolidation
-        trend = prices[-6] - prices[0]
+        # Strong trend before consolidation (as percentage of average price)
+        trend_pct = (prices[-6] - prices[0]) / avg_price * 100
         
-        if abs(trend) < 0.5:
+        # Require at least 0.01% trend (works for any price level)
+        if abs(trend_pct) < 0.01:
             return None
         
-        signal_direction = 'bullish' if trend > 0 else 'bearish'
-        pole_height = abs(trend)
-        target = prices[-1] + (pole_height * 0.75) if trend > 0 else prices[-1] - (pole_height * 0.75)
+        signal_direction = 'bullish' if trend_pct > 0 else 'bearish'
+        pole_height = abs(trend_pct)
+        target_pct = prices[-1] * (1 + pole_height * 0.0075) if trend_pct > 0 else prices[-1] * (1 - pole_height * 0.0075)
         
         return {
             'pattern': 'flag',
             'signal': f'{signal_direction}_continuation',
             'confidence': 0.70,
-            'pole_height': pole_height,
-            'target_price': target
+            'pole_height_pct': pole_height,
+            'target_price': target_pct
         }
     
     def detect_wedge(self) -> Optional[Dict]:
@@ -664,7 +678,11 @@ class ChartPatternRecognizer:
         return None
     
     def detect_breakout(self) -> Optional[Dict]:
-        """Detect potential breakout from consolidation."""
+        """Detect potential breakout from consolidation.
+        
+        For synthetic indices (R_10..R_100), uses percentage-based
+        momentum that scales with price level.
+        """
         if len(self.prices) < 10:
             return None
         
@@ -678,9 +696,13 @@ class ChartPatternRecognizer:
             return None
         
         recent_move = prices[-1] - prices[0]
+        avg_price = np.mean(prices)
+        
+        # Use percentage momentum instead of absolute
+        recent_move_pct = (recent_move / avg_price) * 100 if avg_price > 0 else 0
         momentum = abs(recent_move) / consolidation_volatility
         
-        if momentum > 2.0:  # Strong breakout
+        if momentum > 2.0 and abs(recent_move_pct) > 0.005:  # Strong breakout
             direction = 'up' if recent_move > 0 else 'down'
             
             return {
@@ -688,7 +710,8 @@ class ChartPatternRecognizer:
                 'signal': f'{direction}side_breakout',
                 'confidence': 0.72,
                 'momentum_strength': momentum,
-                'breakout_price': prices[-1]
+                'breakout_price': prices[-1],
+                'breakout_pct': recent_move_pct
             }
         
         return None

@@ -12,7 +12,7 @@ import math
 class TechnicalIndicators:
     """Compute technical indicators from price data."""
     
-    def __init__(self, window: int = 30):
+    def __init__(self, window: int = 100):
         self.window = window
         self.prices = deque(maxlen=window)
         self.volumes = deque(maxlen=window)
@@ -26,7 +26,7 @@ class TechnicalIndicators:
         """Simple Moving Average."""
         if len(self.prices) < period:
             return 0.0
-        return np.mean(list(self.prices)[-period:])
+        return float(np.mean(list(self.prices)[-period:]))
     
     def ema(self, period: int) -> float:
         """Exponential Moving Average."""
@@ -41,11 +41,11 @@ class TechnicalIndicators:
     
     def rsi(self, period: int = 14) -> float:
         """Relative Strength Index (0-100)."""
-        if len(self.prices) < period:
+        if len(self.prices) < period + 1:
             return 50.0
         
         prices = list(self.prices)
-        deltas = np.diff(prices[-period:])
+        deltas = np.diff(prices[-(period+1):])
         gains = np.where(deltas > 0, deltas, 0)
         losses = np.where(deltas < 0, -deltas, 0)
         
@@ -60,16 +60,45 @@ class TechnicalIndicators:
         return float(rsi)
     
     def macd(self) -> Tuple[float, float, float]:
-        """MACD line, Signal line, Histogram."""
+        """MACD line, Signal line, Histogram.
+        
+        For synthetic indices (R_10..R_100), prices are ~4880 so the
+        raw EMA values are large. The MACD line = EMA(12) - EMA(26)
+        captures the trend direction. The signal line is a 9-period
+        EMA of MACD values computed from the recent price history.
+        """
         ema12 = self.ema(12)
         ema26 = self.ema(26)
         macd_line = ema12 - ema26
         
-        # Signal line (9-period EMA of MACD)
-        # Simplified: use current MACD as signal
-        signal = macd_line * 0.1 + (macd_line * 0.9 if len(self.prices) > 26 else 0)
-        histogram = macd_line - signal
+        if len(self.prices) < 26:
+            return float(macd_line), float(macd_line), 0.0
         
+        # Compute signal line as 9-period EMA of the MACD line
+        # We approximate this by using the average MACD value
+        # from the last few price points to get a smoothed signal
+        prices = list(self.prices)
+        if len(prices) >= 35:  # Need enough data for EMA(26) + EMA(12) difference
+            # Calculate MACD values over recent prices for signal line
+            macd_values = []
+            for i in range(max(12, len(prices) - 20), len(prices)):
+                if i >= 12:
+                    # Simplified MACD for signal calculation
+                    p = np.array(prices[max(0, i-11):i+1])
+                    e12 = np.mean(p[-12:]) if len(p) >= 12 else np.mean(p)
+                    p26 = np.array(prices[max(0, i-25):i+1])
+                    e26 = np.mean(p26[-26:]) if len(p26) >= 26 else np.mean(p26)
+                    macd_values.append(e12 - e26)
+            
+            if macd_values:
+                # Signal is average of recent MACD values (acts as smoothed signal)
+                signal = float(np.mean(macd_values))
+                histogram = macd_line - signal
+                return float(macd_line), signal, float(histogram)
+        
+        # Fallback: use macd_line as signal (histogram will be ~0)
+        signal = macd_line
+        histogram = 0.0
         return float(macd_line), float(signal), float(histogram)
     
     def bollinger_bands(self, period: int = 20, std_dev: float = 2.0) -> Tuple[float, float, float]:
@@ -89,13 +118,13 @@ class TechnicalIndicators:
     
     def atr(self, period: int = 14) -> float:
         """Average True Range."""
-        if len(self.prices) < period:
+        if len(self.prices) < period + 1:
             return 0.0
         
         prices = list(self.prices)
         tr_list = []
         
-        for i in range(1, len(prices[-period:])):
+        for i in range(1, len(prices[-(period+1):])):
             high_low = abs(prices[i] - prices[i-1])
             tr_list.append(high_low)
         
@@ -103,10 +132,10 @@ class TechnicalIndicators:
     
     def volatility(self, period: int = 20) -> float:
         """Price volatility (0-1 scale)."""
-        if len(self.prices) < period:
+        if len(self.prices) < period + 1:
             return 0.0
         
-        prices = np.array(list(self.prices)[-period:])
+        prices = np.array(list(self.prices)[-(period+1):])
         returns = np.diff(prices) / prices[:-1]
         volatility = np.std(returns)
         
@@ -114,7 +143,7 @@ class TechnicalIndicators:
         return float(min(volatility * 100, 1.0))
     
     def momentum(self, period: int = 10) -> float:
-        """Price momentum."""
+        """Price momentum (percentage change)."""
         if len(self.prices) < period:
             return 0.0
         
@@ -160,7 +189,7 @@ class TechnicalIndicators:
 class FeatureEngine:
     """Extract 50+ features from market data."""
     
-    def __init__(self, window: int = 30):
+    def __init__(self, window: int = 100):
         self.window = window
         self.indicators = TechnicalIndicators(window)
     
@@ -169,7 +198,7 @@ class FeatureEngine:
         self.indicators.add_price(price, volume)
     
     def extract_features(self) -> Dict[str, float]:
-        """Extract all features."""
+        """Extract all features using raw price values (no tanh normalization)."""
         features = {}
         
         # Price features
@@ -184,9 +213,9 @@ class FeatureEngine:
         features['ema_12'] = self.indicators.ema(12)
         features['ema_26'] = self.indicators.ema(26)
         
-        # Price position relative to MAs
+        # Price position relative to MAs (ratio-based, naturally bounded)
         if features['sma_20'] > 0:
-            features['price_vs_sma20'] = (features['price_current'] - features['sma_20']) / features['sma_20']
+            features['price_vs_sma20'] = (features['price_current'] - features['sma_20']) / features['sma_20'] * 100
         else:
             features['price_vs_sma20'] = 0.0
         
@@ -227,7 +256,7 @@ class FeatureEngine:
         # Volume
         features['obv'] = self.indicators.obv()
         
-        # Trend strength
+        # Trend strength (ratio-based, naturally bounded ~0-0.1 for synthetic indices)
         sma_ratio = features['sma_20'] / features['sma_50'] if features['sma_50'] > 0 else 1.0
         features['trend_strength'] = abs(sma_ratio - 1.0)
         
@@ -243,23 +272,7 @@ class FeatureEngine:
         features['ma_crossover'] = 1.0 if features['ema_12'] > features['ema_26'] else 0.0
         features['price_above_sma'] = 1.0 if features['price_current'] > features['sma_20'] else 0.0
         
-        # Return normalized features
-        return self._normalize_features(features)
-    
-    def _normalize_features(self, features: Dict[str, float]) -> Dict[str, float]:
-        """Normalize features to reasonable ranges."""
-        # Most features are already in 0-1 or normalized ranges
-        # Just cap outliers
-        normalized = {}
-        for key, value in features.items():
-            if isinstance(value, (int, float)):
-                if value > 1000 or value < -1000:
-                    normalized[key] = np.tanh(value)  # Bounded to ~[-1, 1]
-                else:
-                    normalized[key] = value
-            else:
-                normalized[key] = value
-        return normalized
+        return features
     
     def get_feature_names(self) -> List[str]:
         """Get list of all feature names."""

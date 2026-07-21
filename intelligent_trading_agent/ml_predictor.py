@@ -28,21 +28,21 @@ class MLPredictor:
         
         # Ensemble of models with REDUCED COMPLEXITY to prevent overfitting
         self.rf_model = RandomForestClassifier(
-            n_estimators=20,        # Reduced from 100 - fewer trees
-            max_depth=3,            # Reduced from 10 - shallower trees
-            min_samples_split=50,   # Increased from 20 - more samples per split
-            min_samples_leaf=20,    # Added - larger leaves
-            max_features='sqrt',    # Added - fewer features per split
+            n_estimators=50,        # More trees for better pattern learning
+            max_depth=6,            # Deeper trees to capture complex patterns
+            min_samples_split=20,   # Reasonable split requirement
+            min_samples_leaf=10,    # Prevent overfitting on noise
+            max_features='sqrt',
             random_state=42
         )
         
         self.gb_model = GradientBoostingClassifier(
-            n_estimators=20,        # Reduced from 100
-            max_depth=3,            # Reduced from 5
-            learning_rate=0.05,     # Reduced from 0.1 - slower learning
-            min_samples_split=50,   # Added
-            min_samples_leaf=20,    # Added
-            max_features='sqrt',    # Added
+            n_estimators=50,        # More estimators for better learning
+            max_depth=4,            # Moderate depth to capture market patterns
+            learning_rate=0.08,     # Balanced learning rate
+            min_samples_split=20,
+            min_samples_leaf=10,
+            max_features='sqrt',
             random_state=42
         )
         
@@ -54,10 +54,16 @@ class MLPredictor:
         self.observation_buffer = deque(maxlen=500)  # Increased to store more history
         
         # Calculate lookback based on contract duration
-        # Assuming ~1 tick per second: 5 minutes = 300 ticks
-        self.lookback_ticks = contract_duration_minutes * 60  # Predict at contract expiry
+        # We predict over the FULL contract duration for real intelligence.
+        # Our models learn the relationship between current features and
+        # price direction CONTRACT_DURATION minutes later.
+        # This means the ML is learning to predict: "if market looks like X now,
+        # where will price be in 10 minutes?"
+        # Use the actual contract duration for lookback so the model learns
+        # meaningful patterns at the right timescale.
+        self.lookback_ticks = max(min(contract_duration_minutes * 60, 600), 60)  # Cap at 600 ticks, min 60
         
-        agent_logger.log_info(f"ML Predictor: Predicting {contract_duration_minutes} minutes ahead ({self.lookback_ticks} ticks)")
+        agent_logger.log_info(f"ML Predictor: Predicting {contract_duration_minutes} minutes ahead (lookback={self.lookback_ticks} ticks)")
         
         # Model state
         self.is_trained = False
@@ -70,9 +76,9 @@ class MLPredictor:
         self.live_accuracy_window = 20  # Calculate accuracy over last 20 predictions
         
         # Auto-training settings
-        self.auto_train_interval = 50  # Train every 50 new observations (increased from 30)
+        self.auto_train_interval = 30  # Train more frequently for better adaptability
         self.observations_since_training = 0
-        self.min_training_samples = 100  # Increased from 50 to ensure better class balance
+        self.min_training_samples = 50  # Reduced threshold to start learning sooner
         
         # Load existing models if available
         self._load_models()
@@ -326,8 +332,20 @@ class MLPredictor:
                 prediction = 'DOWN'
                 confidence = down_probability
             
-            # Adjust confidence based on model accuracy
-            confidence = confidence * self.model_accuracy
+            # Adjust confidence INTELIGENTLY based on model accuracy
+            # If model accuracy is below 50%, it's worse than random — don't trust it
+            # If model accuracy is above 55%, it has genuine predictive value
+            # We use the confidence gap (distance from 0.5) as the real signal strength
+            if self.model_accuracy > 0.55:
+                # Model has genuine predictive power - use it with accuracy confidence
+                confidence = confidence * (0.5 + self.model_accuracy * 0.5)  # 50-95% of original
+            elif self.model_accuracy > 0.51:
+                # Slight edge - use with adjustment but trust it less
+                confidence = confidence * (self.model_accuracy * 0.8)
+            else:
+                # Model is not better than random - don't use ML signal
+                agent_logger.log_info(f"ML model accuracy ({self.model_accuracy:.2%}) is near random — holding off predictions")
+                return 'HOLD', 0.0
             
             self.predictions_made += 1
             
@@ -341,12 +359,13 @@ class MLPredictor:
                 'validated': False
             })
             
-            # Only log occasionally to reduce noise
-            if self.predictions_made % 50 == 0:
+            # Log to show ML is actively being used
+            if self.predictions_made % 10 == 0:
                 live_acc = self._calculate_live_accuracy()
                 agent_logger.log_info(
-                    f"ML Prediction: {prediction} (confidence: {confidence:.2f}, "
-                    f"accuracy: {self.model_accuracy:.2%}, samples: {len(self.training_buffer)})"
+                    f"🧠 ML Prediction: {prediction} (confidence: {confidence:.2f}, "
+                    f"model_acc: {self.model_accuracy:.2%}, live_acc: {live_acc:.2%}, "
+                    f"samples: {len(self.training_buffer)})"
                 )
             
             return prediction, float(confidence)

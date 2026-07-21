@@ -28,7 +28,7 @@ class MarketAnalyzer:
     
     def __init__(self, window: int = 100):
         self.window = window
-        self.feature_engine = FeatureEngine(window=30)
+        self.feature_engine = FeatureEngine(window=window)
         self.price_history = deque(maxlen=window)
     
     def update(self, price: float, volume: float = 1.0):
@@ -38,7 +38,16 @@ class MarketAnalyzer:
     
     def detect_market_state(self) -> str:
         """
-        Detect current market state with more reliable thresholds.
+        Detect current market state tailored for synthetic indices (R_10..R_100).
+        These are volatility-normalized indices with very different characteristics
+        from forex/stocks — they oscillate rapidly and have persistent low-level momentum.
+        
+        Key improvements for synthetic indices:
+        - Use price rate-of-change over fixed lookback (not raw momentum)
+        - Require SUSTAINED directionality (price above/below both SMA-20 AND SMA-50)
+        - Lower momentum thresholds since synthetic indices trend more subtly
+        - Check ADX/trend_strength from features for confirmation
+        - Stricter ranging detection (low momentum + price crossing SMA)
         Returns: TRENDING_UP, TRENDING_DOWN, RANGING, VOLATILE, CALM, or UNKNOWN
         """
         # Require at least 50 data points for reliable state detection
@@ -55,52 +64,81 @@ class MarketAnalyzer:
             volatility = self.feature_engine.indicators.volatility(20)
             momentum = self.feature_engine.indicators.momentum(20)
             sma_20 = self.feature_engine.indicators.sma(20)
+            sma_50 = self.feature_engine.indicators.sma(50) if len(self.price_history) >= 50 else sma_20
             current_price = self.feature_engine.indicators.current_price()
             
-            # Only use sma_50 if we have enough data
-            sma_50 = self.feature_engine.indicators.sma(50) if len(self.price_history) >= 50 else sma_20
+            # Extract features for additional metrics
+            features = self.feature_engine.extract_features()
+            rsi = features.get('rsi', 50)
+            bb_position = features.get('bb_position', 0.5)
+            trend_strength = features.get('trend_strength', 0.0)
             
             # Validate we have valid data
             if current_price == 0 or sma_20 == 0:
                 agent_logger.log_warning(f"Invalid price data: current={current_price}, sma_20={sma_20}")
                 return MarketState.UNKNOWN
             
-            # Normalize momentum to 0-1 range
-            momentum_abs = abs(momentum) if momentum != 0 else 0
             volatility_norm = volatility if volatility >= 0 else 0
+            momentum_norm = momentum if momentum is not None else 0
+            momentum_abs = abs(momentum_norm)
             
-            # IMPROVED THRESHOLDS:
+            # === SYNTHETIC INDEX OPTIMIZED THRESHOLDS ===
+            # These indices (R_10..R_100) move in smaller increments, so
+            # we use lower thresholds and require SMA confirmation.
             
-            # Check for volatile market FIRST (highest priority)
-            if volatility_norm > 0.5:
+            # 1. Volatile market (highest priority - extreme volatility overrides all)
+            if volatility_norm > 0.8:
                 return MarketState.VOLATILE
             
-            # Check for trending market (momentum + price action)
-            if momentum > 1.0 and current_price > sma_20:
-                if len(self.price_history) >= 50 and current_price > sma_50:
-                    return MarketState.TRENDING_UP
-                elif len(self.price_history) < 50:
-                    return MarketState.TRENDING_UP  # Use short-term trend
-                else:
-                    return MarketState.RANGING  # Mixed signals
-            elif momentum < -1.0 and current_price < sma_20:
-                if len(self.price_history) >= 50 and current_price < sma_50:
-                    return MarketState.TRENDING_DOWN
-                elif len(self.price_history) < 50:
-                    return MarketState.TRENDING_DOWN  # Use short-term trend
-                else:
-                    return MarketState.RANGING  # Mixed signals
+            # 2. Trending market detection
+            # Require: price above/below BOTH SMAs + sustained momentum + RSI confirmation
+            price_above_sma20 = current_price > sma_20
+            price_below_sma20 = current_price < sma_20
+            price_above_sma50 = current_price > sma_50
+            price_below_sma50 = current_price < sma_50
             
-            # Check for ranging market (low momentum, moderate volatility)
-            if volatility_norm < 0.4 and momentum_abs < 1.0:
+            # TRENDING UP: price above both SMAs, positive momentum, RSI > 55
+            if (price_above_sma20 and price_above_sma50 
+                and momentum_norm > 0.3 and rsi > 55
+                and trend_strength > 0.02):
+                return MarketState.TRENDING_UP
+            
+            # TRENDING DOWN: price below both SMAs, negative momentum, RSI < 45
+            if (price_below_sma20 and price_below_sma50 
+                and momentum_norm < -0.3 and rsi < 45
+                and trend_strength > 0.02):
+                return MarketState.TRENDING_DOWN
+            
+            # Weak trend detection (price above/below SMAs but lower conviction)
+            # Still flag as trending to allow trading, but with reduced confidence
+            if (price_above_sma20 and price_above_sma50 and momentum_norm > 0.1):
+                return MarketState.TRENDING_UP
+            if (price_below_sma20 and price_below_sma50 and momentum_norm < -0.1):
+                return MarketState.TRENDING_DOWN
+            
+            # 3. Ranging market: price oscillating around SMAs, low momentum
+            # For synthetic indices, this is the MOST common state
+            # Only return ranging if momentum is truly low AND no clear SMA alignment
+            if momentum_abs < 0.5 and trend_strength < 0.02:
+                # Double-check: price crossing one of the SMAs confirms range
+                sma_20_distance = abs(current_price - sma_20) / sma_20
+                if sma_20_distance < 0.01:  # Price within 1% of SMA-20
+                    return MarketState.RANGING
+                if rsi < 45 or rsi > 55:  # RSI shows some directional bias
+                    # Not truly ranging - has momentum
+                    pass
                 return MarketState.RANGING
             
-            # Check for calm market (very low volatility)
-            if volatility_norm < 0.2:
+            # 4. Calm market (very low volatility + low momentum)
+            if volatility_norm < 0.15 and momentum_abs < 0.2:
                 return MarketState.CALM
             
-            # Default to ranging for unclear signals
-            return MarketState.RANGING
+            # Default: if we have data but no clear classification,
+            # return ranging as the safest default
+            if len(self.price_history) >= 50:
+                return MarketState.RANGING
+            
+            return MarketState.UNKNOWN
             
         except Exception as e:
             agent_logger.log_warning(f"Error in market state detection: {e}")

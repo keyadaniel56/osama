@@ -35,9 +35,10 @@ class RiskManager:
         self.stake_multiplier = 1.0
         
         # Martingale settings (controlled by USE_MARTINGALE in .env)
-        self.use_martingale = USE_MARTINGALE
-        self.martingale_multiplier = 2.0  # Double after loss
-        self.max_martingale_steps = 3  # Max times to double (prevents huge losses)
+        # WARNING: Martingale is dangerous in random-walk markets. Disabled by default.
+        self.use_martingale = False  # DISABLED by default - causes net losses even at 64% win rate
+        self.martingale_multiplier = 1.5  # Gentler: 1.5x instead of 2.0x
+        self.max_martingale_steps = 2  # Max times to double (prevents huge losses)
         self.martingale_step = 0  # Current martingale step
         
         # === PROFIT TARGET / STOP LOSS SYSTEM ===
@@ -150,50 +151,38 @@ class RiskManager:
     def calculate_position_size(self, confidence: float, market_volatility: float, 
                                 trade_direction: str = None, trend_direction: str = None) -> float:
         """
-        Calculate position size using Kelly Criterion applied as a multiplier
-        on the user's configured base stake.
+        Calculate position size — starts EXACTLY at the user's configured base_stake.
         
-        Kelly Criterion: f* = (p * b - q) / b
-        where p = win probability (confidence), q = 1-p, b = odds (assumed 1:1 for Rise/Fall)
+        The user's base_stake ($0.35 from .env) is the MAX default. The following
+        REDUCTIONS are applied only when conditions warrant:
+        - Low confidence: reduce stake proportionally to confidence deficit
+        - High volatility: reduce stake in turbulent markets  
+        - Drawdown: reduce stake when in a losing streak
         
-        For 1:1 binary options: f* = 2p - 1 (optimal fraction)
-        
-        KEY CHANGE: Kelly is a PERCENTAGE MULTIPLIER on base_stake, not a fraction of a
-        virtual bankroll. This ensures the bot starts at the user's configured stake
-        and only makes small adjustments based on performance.
+        The bot NEVER increases above base_stake without martingale logic.
         """
-        historical_win_rate = self._get_recent_win_rate()
-        
-        # Blend historical win rate with current confidence
-        if self.total_wins + self.total_losses >= 10:
-            blended_confidence = 0.6 * historical_win_rate + 0.4 * confidence
-        else:
-            blended_confidence = confidence  # Rely on signal confidence when new
-        
-        # Kelly fraction for binary options with ~1:1 payout
-        kelly_fraction = max(0, 2 * blended_confidence - 1)
-        
-        # Use conservative Kelly (25% of full Kelly)
-        conservative_kelly = kelly_fraction * 0.25
-        
-        # Calculate Kelly-based multiplier on base_stake (range: 1.0 to ~1.25)
-        # This means: Kelly adjusts stake by at most ~25% above base_stake
-        # Example: base_stake=$0.35, kelly_mult=1.14 → position=$0.40
-        kelly_multiplier = 1.0 + conservative_kelly
-        
-        # Start from the user's configured base_stake
+        # Start EXACTLY at the user's configured base_stake
         position_size = self.base_stake
         
-        # Apply Kelly multiplier (slight adjustment above base)
-        position_size *= kelly_multiplier
+        # === LOW CONFIDENCE REDUCTION ===
+        # If confidence is below the threshold, reduce stake proportionally
+        # Example: threshold=0.65, confidence=0.78 → no reduction (above threshold)
+        # Example: threshold=0.65, confidence=0.55 → reduce to 55/65 ≈ 85% of base
+        if confidence < self.min_confidence_threshold:
+            reduction_ratio = confidence / self.min_confidence_threshold
+            position_size *= max(0.5, reduction_ratio)
+            agent_logger.log_info(
+                f"📉 Low confidence reduction: conf={confidence:.2f} < threshold={self.min_confidence_threshold:.2f} "
+                f"→ stake ${position_size:.2f} ({(reduction_ratio*100):.0f}% of base)"
+            )
         
-        # Apply volatility adjustment: reduce stake in high volatility
+        # === VOLATILITY REDUCTION ===
         if market_volatility > 1.0:
-            position_size *= 0.5  # Half position in high volatility
+            position_size *= 0.5
         elif market_volatility > 0.7:
-            position_size *= 0.75 # 75% in elevated volatility
+            position_size *= 0.75
         
-        # Apply drawdown adjustment: reduce stake if in drawdown
+        # === DRAWDOWN REDUCTION ===
         drawdown = self._calculate_drawdown()
         if drawdown > 5:
             drawdown_penalty = max(0.5, 1 - (drawdown / self.max_drawdown))
@@ -203,27 +192,26 @@ class RiskManager:
             )
         
         # === MARTINGALE OVERRIDE ===
+        # Martingale is the ONLY mechanism that can increase above base_stake
         if self.use_martingale and self.martingale_step > 0:
-            # Only apply martingale if trading WITH the trend
             if trade_direction and trend_direction and trade_direction != trend_direction:
-                # Trading against trend - use Kelly-based position, not doubled
+                # Trading against trend - don't double
                 agent_logger.log_warning(
                     f"⚠️ Martingale step {self.martingale_step} but trading AGAINST trend "
                     f"(trade={trade_direction}, trend={trend_direction}) — "
-                    f"Using base-based stake ${position_size:.2f} instead of doubled"
+                    f"Using base stake ${self.base_stake:.2f}"
                 )
+                position_size = self.base_stake
             else:
-                # Martingale doubles from base, but cap at reasonable level
                 martingale_stake = self.base_stake * (self.martingale_multiplier ** self.martingale_step)
-                # Use the higher of martingale and Kelly-based, but cap at 4× base
-                position_size = max(position_size, martingale_stake)
+                position_size = martingale_stake
                 position_size = min(position_size, self.base_stake * 4)
                 agent_logger.log_info(
                     f"🎰 Martingale: Step {self.martingale_step}, "
-                    f"Stake: ${position_size:.2f} (Martingale: ${martingale_stake:.2f})"
+                    f"Stake: ${position_size:.2f} (base=${self.base_stake:.2f})"
                 )
         
-        # Enforce minimum stake
+        # Ensure we never go below minimum
         position_size = max(position_size, MIN_STAKE_AMOUNT)
         
         # Round to 2 decimal places
@@ -231,11 +219,10 @@ class RiskManager:
         
         self.current_stake = position_size
         
-        # Log for debugging
         if position_size != self.base_stake:
             agent_logger.log_info(
                 f"💰 Position size: ${position_size:.2f} (base=${self.base_stake:.2f}, "
-                f"kelly_mult={kelly_multiplier:.3f}, volatility_adj={market_volatility:.2f})"
+                f"conf={confidence:.2f}, vol={market_volatility:.2f})"
             )
         
         return position_size
