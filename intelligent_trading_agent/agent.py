@@ -262,6 +262,12 @@ class IntelligentTradingAgent:
                         for sym in unhealthy_symbols:
                             self.client.resubscribe_to_ticks(sym)
                 
+                # Step 0.5: Auto-resume from pause if enough ticks have passed.
+                # This MUST run BEFORE the "no new ticks" check below, because
+                # when ticks aren't flowing, the continue would skip this entirely.
+                if self.tick_count % 25 == 0:
+                    self.risk_manager.check_auto_resume(self.tick_count)
+                
                 # Step 1: Check if we have NEW ticks for any symbol (use tick counter, not history length)
                 has_new_tick = False
                 for sym in self.symbols:
@@ -524,6 +530,7 @@ class IntelligentTradingAgent:
                                 f"📊 Multi-timeframe trend: {tf_analysis['primary_direction'].upper()} "
                                 f"(strength={tf_analysis['strength']:.2f}, "
                                 f"higher_medium_agree={tf_analysis['higher_medium_agree']}, "
+                                f"all_three_align={tf_analysis.get('all_three_align', False)}, "
                                 f"all_aligned={tf_analysis['all_timeframes_align']})"
                             )
                 
@@ -554,47 +561,84 @@ class IntelligentTradingAgent:
                 rsi = indicators.get('rsi', 50)
                 bb_position = indicators.get('bb_position', 0.5)
                 
-                # === INTELLIGENT MEAN REVERSION GUARD ===
-                # Still protect against trading AGAINST a strong trend at extremes,
-                # but now allow the ML model and pattern recognition to override
-                # when they detect a genuine reversal opportunity.
+                # === MOMENTUM CONSISTENCY GUARD ===
+                # Synthetic indices (R_10..R_100) are MOMENTUM-DRIVEN, not mean-reverting.
+                # When RSI rises above 60, price tends to CONTINUE rising (momentum persists).
+                # When RSI drops below 40, price tends to CONTINUE dropping.
                 #
-                # The ML model is trained on actual price movements over the full
-                # contract duration. If it predicts a reversal at extremes, it has
-                # learned that pattern from the data and should be trusted.
-                #
-                # Only block when:
-                # 1. RSI is EXTREME (>85 or <15) AND
-                # 2. There's a clear multi-timeframe trend AND
-                # 3. ML prediction CONFLICTS with the reversal (i.e., ML also says trend continues)
+                # This guard ensures the trade direction is CONSISTENT with momentum:
+                # - RSI > 60 + positive momentum → only trade UP (CALL)
+                # - RSI < 40 + negative momentum → only trade DOWN (PUT)
+                # - RSI > 60 + negative momentum → CONFLICT (divergence) → block
+                # - RSI < 40 + positive momentum → CONFLICT (divergence) → block
                 has_ml_signal = ml_prediction_direction not in (None, 'HOLD')
+                momentum_10 = indicators.get('momentum_10', 0.0)
                 
-                if (rsi > 80 or rsi < 20) or (bb_position > 0.90 or bb_position < 0.10):
-                    has_trend_data = multi_tf_trend is not None and multi_tf_trend.get('is_trending')
+                # Check for momentum divergence (RSI says one thing, momentum says another)
+                if rsi > 60 and momentum_10 < -0.1:
+                    # RSI high but momentum negative = bearish divergence
+                    if trade_direction == 'up':
+                        agent_logger.log_warning(
+                            f"⚠️ BEARISH DIVERGENCE: RSI={rsi:.0f} (high) but momentum={momentum_10:.3f} (negative). "
+                            f"RSI and momentum disagree. Blocking UP trade."
+                        )
+                        time.sleep(0.05)
+                        continue
+                
+                if rsi < 40 and momentum_10 > 0.1:
+                    # RSI low but momentum positive = bullish divergence
+                    if trade_direction == 'down':
+                        agent_logger.log_warning(
+                            f"⚠️ BULLISH DIVERGENCE: RSI={rsi:.0f} (low) but momentum={momentum_10:.3f} (positive). "
+                            f"RSI and momentum disagree. Blocking DOWN trade."
+                        )
+                        time.sleep(0.05)
+                        continue
+                
+                # Check for momentum-direction consistency
+                # If momentum is strongly positive, we should only trade UP
+                if momentum_10 > 0.5 and trade_direction == 'down':
+                    agent_logger.log_warning(
+                        f"⚠️ MOMENTUM CONFLICT: momentum={momentum_10:.3f} (strongly positive) but direction=DOWN. "
+                        f"Strong momentum should continue. Blocking contradictory trade."
+                    )
+                    time.sleep(0.05)
+                    continue
+                
+                # If momentum is strongly negative, we should only trade DOWN
+                if momentum_10 < -0.5 and trade_direction == 'up':
+                    agent_logger.log_warning(
+                        f"⚠️ MOMENTUM CONFLICT: momentum={momentum_10:.3f} (strongly negative) but direction=UP. "
+                        f"Strong momentum should continue. Blocking contradictory trade."
+                    )
+                    time.sleep(0.05)
+                    continue
+                
+                # === RANGING MARKET GUARD ===
+                # The bot has a 40.3% win rate in ranging markets (86 losses out of 144 trades).
+                # In ranging markets, only trade if we have VERY strong conviction.
+                if 'ranging' in self.current_market_state:
+                    # In ranging, require ensemble confidence to be HIGH
+                    if ensemble_confidence < 0.80:
+                        if self.tick_count % 50 == 0:
+                            agent_logger.log_info(
+                                f"⚠️ Ranging market: confidence {ensemble_confidence:.2f} < 0.80. "
+                                f"Not trading in ranging without high conviction."
+                            )
+                        time.sleep(0.05)
+                        continue
                     
-                    if rsi > 80 or bb_position > 0.90:
-                        if has_trend_data and multi_tf_trend.get('primary_direction') == 'up':
-                            # ML also says UP - this means the ML is predicting the trend continues
-                            # even at overbought levels. Don't fight both trend AND ML.
-                            if has_ml_signal and ml_prediction_direction == 'UP':
-                                if self.tick_count % 50 == 0:
-                                    agent_logger.log_warning(
-                                        f"⚠️ OVERBOUGHT ({rsi:.0f}, BB={bb_position:.2f}) with trend+ML=UP — "
-                                        f"Not taking contrarian PUT. All evidence says trend continues."
-                                    )
-                                time.sleep(0.05)
-                                continue
-                    
-                    if rsi < 20 or bb_position < 0.10:
-                        if has_trend_data and multi_tf_trend.get('primary_direction') == 'down':
-                            if has_ml_signal and ml_prediction_direction == 'DOWN':
-                                if self.tick_count % 50 == 0:
-                                    agent_logger.log_warning(
-                                        f"⚠️ OVERSOLD ({rsi:.0f}, BB={bb_position:.2f}) with trend+ML=DOWN — "
-                                        f"Not taking contrarian CALL. All evidence says trend continues."
-                                    )
-                                time.sleep(0.05)
-                                continue
+                    # In ranging, also require at least 2 signal sources
+                    # (not just a single indicator or pattern)
+                    signal_count = sum(1 for s in [ml_prediction, pattern_data, indicators] if s)
+                    if signal_count < 2:
+                        if self.tick_count % 50 == 0:
+                            agent_logger.log_info(
+                                f"⚠️ Ranging market: only {signal_count} signal source(s). "
+                                f"Requiring 2+ in ranging. Not trading."
+                            )
+                        time.sleep(0.05)
+                        continue
                 
                 # PATTERN CONTRADICTION CHECK: Only block if patterns are EQUALLY contradictory
                 # (same number of bullish and bearish patterns with similar confidence)
@@ -774,7 +818,18 @@ class IntelligentTradingAgent:
                     continue
                 
                 # Step 8: Check risk constraints
-                can_trade = self.risk_manager.should_trade(confidence, self.market_health)
+                # ENHANCED: Pass trend confidence info for sure trend override
+                is_sure_trend = False
+                trend_confidence_score = 0
+                if multi_tf_trend:
+                    is_sure_trend = multi_tf_trend.get('is_sure_trend', False)
+                    trend_confidence_score = multi_tf_trend.get('trend_confidence_score', 0)
+                
+                can_trade = self.risk_manager.should_trade(
+                    confidence, self.market_health,
+                    is_sure_trend=is_sure_trend,
+                    trend_confidence_score=trend_confidence_score
+                )
                 
                 # Step 9: Wait for active trade to close before opening another
                 # If there is already an open contract, skip until it settles.
@@ -879,7 +934,9 @@ class IntelligentTradingAgent:
                     position_size = self.risk_manager.calculate_position_size(
                         confidence, volatility, 
                         trade_direction=trade_direction, 
-                        trend_direction=trend_dir
+                        trend_direction=trend_dir,
+                        is_sure_trend=is_sure_trend,
+                        trend_confidence_score=trend_confidence_score
                     )
                     
                     self._execute_trade(strategy, market_data, confidence, position_size, 
@@ -911,12 +968,6 @@ class IntelligentTradingAgent:
                     recommendations = self.learning_system.get_adaptation_recommendations()
                     if any(recommendations.values()):
                         self.risk_manager.adapt_risk_parameters(recommendations)
-                
-                # Step 14.5: Auto-resume from learning system pause if enough ticks have passed
-                # The learning system may pause trading after a bad streak, but we need to
-                # auto-resume after a cooldown period so the agent doesn't stay paused forever.
-                if self.tick_count % 25 == 0:
-                    self.risk_manager.check_auto_resume(self.tick_count)
                 
                 # Step 15: Periodic status logs
                 if self.tick_count % 500 == 0:
@@ -1245,6 +1296,12 @@ class IntelligentTradingAgent:
         """Callback when new tick is received from Deriv."""
         price = tick_data.get('quote')
         symbol = tick_data.get('symbol', self.symbol)
+        
+        # A tick proves the WebSocket is alive and working.
+        # Force the connection state to True so the main loop doesn't
+        # stay blocked by a stale disconnected flag from a reconnection.
+        if self.client:
+            self.client.connected = True
         
         # Update the appropriate market analyzer
         if symbol in self.market_analyzers:

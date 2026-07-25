@@ -116,17 +116,30 @@ class MultiTimeframeTrendAnalyzer:
     Higher timeframes (slower) define the primary trend.
     Lower timeframes (faster) define entry timing.
     Only trades when multiple timeframes align.
+    
+    ENHANCED for lower timeframe profitability:
+    - Added ultra_short timeframe (10 ticks) for quick entries
+    - Added trend confidence scoring (0-100) to identify "sure trends"
+    - A "sure trend" requires: all 5 timeframes aligned + strong R-squared + momentum consistency
+    - Tracks trend persistence (how long the trend has been valid)
     """
     
     def __init__(self):
         # Define timeframe windows (in ticks)
+        # ENHANCED: Added ultra_short for faster entries on lower timeframes
         self.timeframes = {
-            'higher': 200,    # ~3.3 minutes at 1 tick/sec - primary trend
-            'medium': 100,    # ~1.7 minutes - secondary trend
-            'lower': 50,      # ~50 seconds - entry timing
-            'micro': 20,      # ~20 seconds - immediate momentum
+            'ultra_short': 10,   # ~10 seconds - immediate momentum for quick entries
+            'micro': 20,         # ~20 seconds - entry timing
+            'lower': 50,         # ~50 seconds - short-term trend
+            'medium': 100,       # ~1.7 minutes - secondary trend
+            'higher': 200,       # ~3.3 minutes - primary trend
         }
         self.price_histories = {name: deque(maxlen=window) for name, window in self.timeframes.items()}
+        
+        # Trend persistence tracking
+        self._trend_history = deque(maxlen=50)  # Track last 50 trend states
+        self._consecutive_trend_ticks = 0       # How many ticks trend has been consistent
+        self._last_primary_direction = None
         
     def add_price(self, price: float):
         """Add price to all timeframe histories."""
@@ -187,6 +200,12 @@ class MultiTimeframeTrendAnalyzer:
         Get the aligned trend across all timeframes.
         Returns the primary trend direction and alignment score.
         Only returns a direction if higher and medium timeframes agree.
+        
+        ENHANCED: 
+        - 5 timeframes now (ultra_short, micro, lower, medium, higher)
+        - Added trend_confidence_score (0-100) for "sure trend" identification
+        - Added trend_persistence (how long trend has been consistent)
+        - A "sure trend" requires: confidence >= 80 AND persistence >= 20 ticks
         """
         trends = {}
         for tf_name in self.timeframes:
@@ -196,11 +215,13 @@ class MultiTimeframeTrendAnalyzer:
         medium = trends.get('medium', {})
         lower = trends.get('lower', {})
         micro = trends.get('micro', {})
+        ultra_short = trends.get('ultra_short', {})
         
         higher_dir = higher.get('direction', 'unknown')
         medium_dir = medium.get('direction', 'unknown')
         lower_dir = lower.get('direction', 'unknown')
         micro_dir = micro.get('direction', 'unknown')
+        ultra_short_dir = ultra_short.get('direction', 'unknown')
         
         # Count directions across timeframes (weighted by timeframe importance)
         direction_weights = {
@@ -210,8 +231,8 @@ class MultiTimeframeTrendAnalyzer:
             'unknown': 0
         }
         
-        # Higher timeframe gets 4x weight, medium 2x, lower 1x, micro 0.5x
-        weights = {'higher': 4, 'medium': 2, 'lower': 1, 'micro': 0.5}
+        # ENHANCED weights: higher=5x, medium=3x, lower=2x, micro=1x, ultra_short=0.5x
+        weights = {'higher': 5, 'medium': 3, 'lower': 2, 'micro': 1, 'ultra_short': 0.5}
         
         for tf_name, trend in trends.items():
             d = trend.get('direction', 'unknown')
@@ -233,20 +254,99 @@ class MultiTimeframeTrendAnalyzer:
         # Check if higher and medium timeframes agree (required for strong signal)
         higher_medium_agree = higher_dir == medium_dir and higher_dir != 'unknown' and higher_dir != 'sideways'
         
+        # Check if ALL THREE (higher + medium + lower) align
+        all_three_align = higher_medium_agree and lower_dir == higher_dir and lower_dir != 'unknown' and lower_dir != 'sideways'
+        
         # Check if all timeframes align (strongest signal)
         all_align = (
-            higher_dir == medium_dir == lower_dir and
+            higher_dir == medium_dir == lower_dir == micro_dir and
             higher_dir != 'unknown' and higher_dir != 'sideways'
         )
+        
+        # ENHANCED: Check if ALL 5 timeframes align (ultra_short included)
+        all_5_align = (
+            higher_dir == medium_dir == lower_dir == micro_dir == ultra_short_dir and
+            higher_dir != 'unknown' and higher_dir != 'sideways'
+        )
+        
+        # === TREND CONFIDENCE SCORING ===
+        # This identifies "SURE TRENDS" - trends so clear we can trade with high confidence
+        # Score 0-100 where 80+ = "sure trend"
+        trend_confidence_score = 0
+        
+        # 1. Timeframe alignment (max 40 points)
+        if all_5_align:
+            trend_confidence_score += 40  # All 5 timeframes aligned = very strong
+        elif all_align:
+            trend_confidence_score += 30  # 4 timeframes aligned = strong
+        elif higher_medium_agree:
+            trend_confidence_score += 20  # 2 main timeframes agree = moderate
+        
+        # 2. R-squared strength across timeframes (max 30 points)
+        r_squared_scores = []
+        for tf_name in ['higher', 'medium', 'lower']:
+            tf = trends.get(tf_name, {})
+            r2 = abs(tf.get('r_squared', 0))
+            r_squared_scores.append(min(r2 * 30, 10))  # Each timeframe up to 10 points
+        trend_confidence_score += sum(r_squared_scores)
+        
+        # 3. Momentum consistency (max 20 points)
+        # All timeframes should have momentum in the same direction
+        momentum_directions = []
+        for tf_name in self.timeframes:
+            tf = trends.get(tf_name, {})
+            mom = tf.get('momentum', 0)
+            if mom > 0.005:
+                momentum_directions.append(1)
+            elif mom < -0.005:
+                momentum_directions.append(-1)
+            else:
+                momentum_directions.append(0)
+        
+        # Check if all non-zero momentum directions agree
+        non_zero_mom = [d for d in momentum_directions if d != 0]
+        if non_zero_mom:
+            all_same_dir = all(d == non_zero_mom[0] for d in non_zero_mom)
+            if all_same_dir:
+                trend_confidence_score += 20  # All momentum in same direction
+            elif len(non_zero_mom) >= 3:
+                trend_confidence_score += 10  # Most agree
+        else:
+            trend_confidence_score += 5  # Low momentum overall
+        
+        # 4. Trend persistence (max 10 points)
+        # Track how long the trend direction has been consistent
+        if primary in ('up', 'down'):
+            if primary == self._last_primary_direction:
+                self._consecutive_trend_ticks += 1
+            else:
+                self._consecutive_trend_ticks = 0
+            self._last_primary_direction = primary
+            
+            persistence_points = min(self._consecutive_trend_ticks / 5, 10)  # 1 point per 5 ticks, max 10
+            trend_confidence_score += persistence_points
+        
+        # Cap at 100
+        trend_confidence_score = min(trend_confidence_score, 100)
+        
+        # Determine if this is a "SURE TREND"
+        is_sure_trend = trend_confidence_score >= 80 and self._consecutive_trend_ticks >= 20
         
         return {
             'primary_direction': primary,
             'alignment_score': alignment_score,
             'higher_medium_agree': higher_medium_agree,
+            'all_three_align': higher_medium_agree and lower_dir == higher_dir and lower_dir != 'unknown' and lower_dir != 'sideways',
             'all_timeframes_align': all_align,
+            'all_5_timeframes_align': all_5_align,
             'timeframes': trends,
-            'is_trending': higher_medium_agree and primary in ('up', 'down'),
-            'strength': alignment_score * (1.5 if all_align else 1.0 if higher_medium_agree else 0.5)
+            'is_trending': higher_medium_agree and lower_dir == higher_dir and lower_dir != 'unknown' and lower_dir != 'sideways' and primary in ('up', 'down'),
+            'strength': alignment_score * (1.5 if all_5_align else 1.3 if all_align else 1.15 if all_three_align else 1.0 if higher_medium_agree else 0.5),
+            # ENHANCED fields:
+            'trend_confidence_score': trend_confidence_score,  # 0-100 score
+            'is_sure_trend': is_sure_trend,                    # True if confidence >= 80 AND persistent
+            'trend_persistence': self._consecutive_trend_ticks, # How many ticks trend has been consistent
+            'momentum_consistency': all(m == non_zero_mom[0] for m in non_zero_mom) if non_zero_mom else False,
         }
 
 
