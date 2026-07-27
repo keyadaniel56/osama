@@ -110,6 +110,222 @@ class CandlePatternLearner:
         return [(p[0], p[1]) for p in patterns[:top_n]]
 
 
+class CandleDirectionAnalyzer:
+    """
+    Analyzes candle-by-candle direction to understand market momentum.
+    Unlike the multi-timeframe trend analyzer which uses linear regression on
+    smoothed prices, this analyzer looks at RAW consecutive candle behavior:
+    
+    - Consecutive candle direction (3+ bullish candles in a row = strong uptrend)
+    - Wick analysis (long upper wicks = rejection at resistance, long lower wicks = support)
+    - Candle body momentum (increasing body sizes = acceleration, decreasing = exhaustion)
+    - Candle velocity (how fast candles are moving in a direction)
+    
+    This provides a REALTIME directional signal based on actual candle formations,
+    giving the bot awareness of market direction through candlestick analysis.
+    """
+    
+    def __init__(self):
+        self.candle_directions = deque(maxlen=50)  # Track last 50 candle directions: 1=bull, -1=bear, 0=neutral
+        self.candle_bodies = deque(maxlen=50)       # Track last 50 candle body sizes
+        self.candle_wick_ratios = deque(maxlen=50)  # Track last 50 upper/lower wick ratios
+        self.candle_ranges = deque(maxlen=50)       # Track last 50 total ranges
+        
+        # Direction scoring
+        self.bullish_candle_streak = 0  # Consecutive bullish candles
+        self.bearish_candle_streak = 0  # Consecutive bearish candles
+        self.max_streak = 0  # Longest streak seen
+        
+        # Running statistics
+        self.avg_body_size = 0.0
+        self.avg_range = 0.0
+        
+    def add_candle(self, candle: Candle):
+        """Process a new candlestick and update direction analysis."""
+        # Determine candle direction (-1, 0, 1)
+        if candle.is_bullish:
+            direction = 1
+            self.bullish_candle_streak += 1
+            self.bearish_candle_streak = 0
+        elif candle.is_bearish:
+            direction = -1
+            self.bearish_candle_streak += 1
+            self.bullish_candle_streak = 0
+        else:
+            direction = 0
+            # Don't reset streaks on doji - let them continue
+        
+        self.candle_directions.append(direction)
+        self.candle_bodies.append(candle.body)
+        self.candle_ranges.append(candle.total_range)
+        
+        # Track max streak
+        self.max_streak = max(self.max_streak, self.bullish_candle_streak, self.bearish_candle_streak)
+        
+        # Wick ratio: >1 means upper wick dominates, <1 means lower wick dominates
+        if candle.lower_wick > 0:
+            wick_ratio = candle.upper_wick / candle.lower_wick if candle.lower_wick > 0 else 1.0
+        else:
+            wick_ratio = 1.0
+        self.candle_wick_ratios.append(wick_ratio)
+        
+        # Update averages
+        if self.candle_bodies:
+            self.avg_body_size = sum(self.candle_bodies) / len(self.candle_bodies)
+        if self.candle_ranges:
+            self.avg_range = sum(self.candle_ranges) / len(self.candle_ranges)
+    
+    def get_direction_signal(self) -> Dict:
+        """
+        Get a directional signal based on candle analysis.
+        
+        Returns:
+            Dict with:
+                - direction: 'up', 'down', 'neutral'
+                - confidence: 0.0-1.0
+                - streak: number of consecutive same-direction candles
+                - body_momentum: 'accelerating'/'decelerating'/'stable'
+                - wick_signal: 'rejection_up'/'rejection_down'/'neutral'
+                - candle_velocity: how fast candles are moving (-1 to 1)
+        """
+        if len(self.candle_directions) < 3:
+            return {
+                'direction': 'neutral',
+                'confidence': 0.0,
+                'streak': 0,
+                'body_momentum': 'stable',
+                'wick_signal': 'neutral',
+                'candle_velocity': 0.0,
+            }
+        
+        # === 1. CONSECUTIVE DIRECTION STREAK ===
+        # 3+ same-direction candles in a row = strong signal
+        streak = max(self.bullish_candle_streak, self.bearish_candle_streak)
+        streak_score = min(streak / 5.0, 1.0)  # 5+ candles = max strength
+        
+        # Direction from streak
+        if self.bullish_candle_streak >= 2:
+            streak_direction = 'up'
+        elif self.bearish_candle_streak >= 2:
+            streak_direction = 'down'
+        else:
+            streak_direction = 'neutral'
+        
+        # === 2. BODY MOMENTUM ===
+        # Are candle bodies getting bigger (acceleration) or smaller (exhaustion)?
+        if len(self.candle_bodies) >= 5:
+            recent_bodies = list(self.candle_bodies)[-5:]
+            # Check if last 3 bodies are larger than the 2 before
+            if len(recent_bodies) >= 3:
+                recent3_avg = sum(recent_bodies[-3:]) / 3
+                prior2_avg = sum(recent_bodies[:-3]) / 2 if len(recent_bodies) > 3 else self.avg_body_size
+                body_trend = recent3_avg / prior2_avg if prior2_avg > 0 else 1.0
+                if body_trend > 1.3:
+                    body_momentum = 'accelerating'
+                elif body_trend < 0.7:
+                    body_momentum = 'decelerating'
+                else:
+                    body_momentum = 'stable'
+            else:
+                body_momentum = 'stable'
+        else:
+            body_momentum = 'stable'
+        
+        # === 3. WICK ANALYSIS ===
+        # Long upper wicks with bearish candles = rejection at resistance
+        # Long lower wicks with bullish candles = support holding
+        if len(self.candle_wick_ratios) >= 3:
+            recent_wick_ratios = list(self.candle_wick_ratios)[-3:]
+            avg_wick_ratio = sum(recent_wick_ratios) / 3
+            
+            # Check latest candles for wick signals
+            latest_candle_dirs = list(self.candle_directions)[-3:]
+            latest_bodies = list(self.candle_bodies)[-3:]
+            
+            wick_signal = 'neutral'
+            for i in range(len(latest_candle_dirs)):
+                if latest_candle_dirs[i] == -1 and latest_bodies[i] > 0:  # Bearish candle
+                    # Check if candle has long upper wick (rejection)
+                    if latest_bodies[i] > 0 and self.candle_wick_ratios[-1] > 2.0:
+                        wick_signal = 'rejection_up'  # Price tried to go up but was rejected
+                        break
+                elif latest_candle_dirs[i] == 1 and latest_bodies[i] > 0:  # Bullish candle
+                    # Check if candle has long lower wick (support bounce)
+                    if self.candle_wick_ratios[-1] < 0.5:
+                        wick_signal = 'rejection_down'  # Price tried to go down but bounced
+                        break
+        else:
+            wick_signal = 'neutral'
+        
+        # === 4. CANDLE VELOCITY ===
+        # How fast are candles moving in the current direction?
+        if len(self.candle_directions) >= 10:
+            recent_dirs = list(self.candle_directions)[-10:]
+            velocity = sum(recent_dirs) / len(recent_dirs)  # -1 to 1
+        else:
+            velocity = 0.0
+        
+        # === COMBINE SIGNALS ===
+        # Determine final direction
+        if streak_direction != 'neutral':
+            direction = streak_direction
+        elif velocity > 0.3:
+            direction = 'up'
+        elif velocity < -0.3:
+            direction = 'down'
+        else:
+            direction = 'neutral'
+        
+        # Calculate confidence
+        confidence = 0.0
+        if direction == 'up':
+            # Bullish confidence factors:
+            # - Longer streak = higher confidence
+            # - Accelerating bodies = momentum continuing
+            # - Velocity strength
+            confidence += streak_score * 0.5
+            confidence += min(abs(velocity) * 1.5, 0.3)
+            if body_momentum == 'accelerating':
+                confidence += 0.15
+            if wick_signal == 'rejection_down':
+                confidence += 0.15  # Support bounce = more bullish
+            if wick_signal == 'rejection_up':
+                confidence -= 0.10  # Upper wick rejection = caution
+        elif direction == 'down':
+            # Bearish confidence factors
+            confidence += streak_score * 0.5
+            confidence += min(abs(velocity) * 1.5, 0.3)
+            if body_momentum == 'accelerating':
+                confidence += 0.15
+            if wick_signal == 'rejection_up':
+                confidence += 0.15  # Resistance rejection = more bearish
+            if wick_signal == 'rejection_down':
+                confidence -= 0.10  # Lower wick bounce = caution
+        
+        # Cap and floor
+        confidence = max(0.0, min(confidence, 1.0))
+        
+        return {
+            'direction': direction,
+            'confidence': confidence,
+            'streak': streak,
+            'body_momentum': body_momentum,
+            'wick_signal': wick_signal,
+            'candle_velocity': velocity,
+            'streak_direction': streak_direction,
+        }
+    
+    def get_status(self) -> str:
+        """Get a status string for this analyzer."""
+        signal = self.get_direction_signal()
+        return (
+            f"CandleDir: {signal['direction'].upper()} "
+            f"(conf={signal['confidence']:.2f}, streak={signal['streak']}, "
+            f"velocity={signal['candle_velocity']:.2f}, "
+            f"bodies={signal['body_momentum']}, wicks={signal['wick_signal']})"
+        )
+
+
 class MultiTimeframeTrendAnalyzer:
     """
     Analyzes trends across multiple timeframes.
@@ -340,7 +556,7 @@ class MultiTimeframeTrendAnalyzer:
             'all_timeframes_align': all_align,
             'all_5_timeframes_align': all_5_align,
             'timeframes': trends,
-            'is_trending': higher_medium_agree and lower_dir == higher_dir and lower_dir != 'unknown' and lower_dir != 'sideways' and primary in ('up', 'down'),
+            'is_trending': higher_medium_agree and primary in ('up', 'down'),
             'strength': alignment_score * (1.5 if all_5_align else 1.3 if all_align else 1.15 if all_three_align else 1.0 if higher_medium_agree else 0.5),
             # ENHANCED fields:
             'trend_confidence_score': trend_confidence_score,  # 0-100 score
@@ -363,6 +579,7 @@ class ChartPatternRecognizer:
         self.patterns_detected = {}
         self.candle_learner = CandlePatternLearner()
         self.multi_tf_analyzer = MultiTimeframeTrendAnalyzer()
+        self.candle_direction_analyzer = CandleDirectionAnalyzer()  # NEW: real-time candle direction
         self.last_candle = None
         self.candle_count = 0
     
@@ -397,6 +614,7 @@ class ChartPatternRecognizer:
                     close=candle['close']
                 )
                 self.candle_learner.add_candle(new_candle)
+                self.candle_direction_analyzer.add_candle(new_candle)  # NEW: feed to direction analyzer
                 # Start new candle
                 self.last_candle = {'open': price, 'high': price, 'low': price, 'close': price, 'ticks': 1}
     
@@ -464,6 +682,20 @@ class ChartPatternRecognizer:
                     }
                     for name, acc in best_patterns
                 }
+            }
+        
+        # NEW: Add candle direction analysis signal
+        candle_dir_signal = self.candle_direction_analyzer.get_direction_signal()
+        if candle_dir_signal['direction'] != 'neutral' and candle_dir_signal['confidence'] >= 0.4:
+            signal_dir = 'bullish' if candle_dir_signal['direction'] == 'up' else 'bearish'
+            patterns['candle_direction'] = {
+                'pattern': 'candle_direction',
+                'signal': f'{signal_dir}_momentum',
+                'confidence': candle_dir_signal['confidence'],
+                'streak': candle_dir_signal['streak'],
+                'body_momentum': candle_dir_signal['body_momentum'],
+                'wick_signal': candle_dir_signal['wick_signal'],
+                'candle_velocity': candle_dir_signal['candle_velocity'],
             }
         
         self.patterns_detected = patterns

@@ -535,6 +535,8 @@ class IntelligentTradingAgent:
                             )
                 
                 # Step 6.75: Prepare pattern data for decision engine
+                # IMPORTANT: Preserve ALL fields from each pattern, especially candle_direction's
+                # extra fields (streak, body_momentum, wick_signal, candle_velocity)
                 pattern_data = None
                 if patterns_detected:
                     pattern_data = {'patterns': {}}
@@ -548,11 +550,10 @@ class IntelligentTradingAgent:
                         else:
                             pattern_type = 'neutral'
                         
-                        pattern_data['patterns'][pattern_name] = {
-                            'type': pattern_type,
-                            'confidence': pattern_info.get('confidence', 0.5),
-                            'signal': signal
-                        }
+                        # Preserve ALL original fields plus computed type
+                        entry = dict(pattern_info)  # Copy all original fields
+                        entry['type'] = pattern_type  # Add computed type
+                        pattern_data['patterns'][pattern_name] = entry
                 
                 # Step 7: Use decision engine to combine ML + patterns + indicators
                 indicators = market_data['features']

@@ -14,7 +14,8 @@ from config import (
     BASE_STAKE, MAX_DAILY_LOSS, MAX_CONSEC_LOSSES, 
     MAX_DRAWDOWN, MIN_CONFIDENCE, MIN_MARKET_HEALTH,
     MIN_STAKE_AMOUNT, MAX_GLOBAL_CONSEC_LOSSES,
-    USE_MARTINGALE, TAKE_PROFIT, STOP_LOSS
+    USE_MARTINGALE, TAKE_PROFIT, STOP_LOSS,
+    MARTINGALE_MULTIPLIER, MARTINGALE_MAX_STEPS
 )
 
 
@@ -34,12 +35,14 @@ class RiskManager:
         self.current_stake = BASE_STAKE
         self.stake_multiplier = 1.0
         
-        # Martingale settings (controlled by USE_MARTINGALE in .env)
+        # Martingale settings (fully controlled by .env via config)
+        # MARTINGALE_MULTIPLIER: how much stake increases per step (1.5 = 50% increase, 2.0 = double)
+        # MARTINGALE_MAX_STEPS: how many steps before resetting (higher = more aggressive recovery)
         # WARNING: Martingale is dangerous in random-walk markets.
         # Default is controlled by .env file (USE_MARTINGALE=true in current config)
         self.use_martingale = USE_MARTINGALE  # Respect .env setting
-        self.martingale_multiplier = 1.5  # Gentler: 1.5x instead of 2.0x
-        self.max_martingale_steps = 2  # Max times to double (prevents huge losses)
+        self.martingale_multiplier = MARTINGALE_MULTIPLIER  # From .env (default 1.5)
+        self.max_martingale_steps = MARTINGALE_MAX_STEPS  # From .env (default 2)
         self.martingale_step = 0  # Current martingale step
         
         # === PROFIT TARGET / STOP LOSS SYSTEM ===
@@ -94,7 +97,7 @@ class RiskManager:
         self.trading_paused = False
         self.pause_reason = None
         self.pause_tick_count = 0
-        self.auto_resume_after_ticks = 500
+        self.auto_resume_after_ticks = 200  # REDUCED: resume faster after trailing stop pause
         self.learning_system_pause = False
     
     def should_trade(self, confidence: float, market_health: float, 

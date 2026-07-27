@@ -26,10 +26,11 @@ class DecisionEngine:
     """
     
     def __init__(self):
-        self.ml_weight = 0.25        # ML model confidence weight (reduced - less reliable)
-        self.trend_weight = 0.35     # Multi-timeframe trend weight (INCREASED - primary signal)
-        self.pattern_weight = 0.30   # Pattern recognition weight (INCREASED - patterns over indicators)
-        self.indicator_weight = 0.10 # Technical indicators weight (unchanged - supporting only)
+        self.ml_weight = 0.20        # ML model confidence weight (reduced - less reliable)
+        self.trend_weight = 0.30     # Multi-timeframe trend weight (primary signal)
+        self.pattern_weight = 0.20   # Pattern recognition weight (chart patterns)
+        self.candle_dir_weight = 0.20 # NEW: Candle direction analysis weight (consecutive candles, wicks, velocity)
+        self.indicator_weight = 0.10 # Technical indicators weight (supporting only)
         
         # Thresholds for confidence
         self.min_ensemble_confidence = MIN_CONFIDENCE
@@ -91,7 +92,23 @@ class DecisionEngine:
                     f"sure_trend={is_sure_trend})"
                 )
         
-        # 2. PATTERN RECOGNITION SIGNAL (ENHANCED - now SECONDARY priority)
+        # 2. CANDLE DIRECTION SIGNAL (NEW - real-time candle analysis)
+        # Analyzes consecutive candle directions, wicks, body momentum, and velocity
+        # This is a fast, real-time signal that captures immediate market direction
+        if patterns and 'candle_direction' in patterns.get('patterns', {}):
+            candle_dir = patterns['patterns']['candle_direction']
+            candle_signal = self._process_candle_direction_signal(candle_dir)
+            if candle_signal:
+                signals['candle_dir'] = candle_signal['direction']
+                confidences['candle_dir'] = candle_signal['confidence']
+                agent_logger.log_info(
+                    f"🕯️ Candle Direction: {candle_signal['direction'].upper()} "
+                    f"(conf={candle_signal['confidence']:.2f}, "
+                    f"streak={candle_dir.get('streak', 0)}, "
+                    f"velocity={candle_dir.get('candle_velocity', 0):.2f})"
+                )
+        
+        # 3. PATTERN RECOGNITION SIGNAL (tertiary priority)
         # Patterns are more reliable than indicators for synthetic indices
         if patterns:
             pattern_signal = self._process_pattern_signal(patterns)
@@ -99,14 +116,14 @@ class DecisionEngine:
                 signals['pattern'] = pattern_signal['direction']
                 confidences['pattern'] = pattern_signal['confidence']
         
-        # 3. ML MODEL SIGNAL (tertiary - reduced weight)
+        # 4. ML MODEL SIGNAL (quaternary - reduced weight)
         if ml_prediction:
             ml_signal = self._process_ml_signal(ml_prediction)
             if ml_signal:
                 signals['ml'] = ml_signal['direction']
                 confidences['ml'] = ml_signal['confidence']
         
-        # 4. TECHNICAL INDICATORS SIGNAL (quaternary - supporting only)
+        # 5. TECHNICAL INDICATORS SIGNAL (quinary - supporting only)
         if indicators:
             indicator_signal = self._process_indicator_signal(indicators, market_state)
             if indicator_signal:
@@ -132,7 +149,7 @@ class DecisionEngine:
                 # Check if at least one other signal agrees with the trend
                 other_agree = any(
                     signals.get(s) == trend_dir 
-                    for s in ['pattern', 'ml', 'indicator'] 
+                    for s in ['candle_dir', 'pattern', 'ml', 'indicator'] 
                     if s in signals
                 )
                 if other_agree:
@@ -172,7 +189,7 @@ class DecisionEngine:
             conflicting_signals = []
             agreeing_signals = []
             
-            for sig_type in ['pattern', 'ml', 'indicator']:
+            for sig_type in ['candle_dir', 'pattern', 'ml', 'indicator']:
                 if sig_type in signals:
                     if signals[sig_type] == trend_direction:
                         agreeing_signals.append(sig_type)
@@ -252,16 +269,44 @@ class DecisionEngine:
                 )
                 return None, 0.0  # HARD BLOCK in non-trending with single source
         
+        # === NO TREND GUARD ===
+        # If neither trend nor candle_dir signals are present, the bot only has
+        # pattern + indicator signals. These are weaker signals that have produced
+        # false signals in the past. Require either:
+        # - At least one trend-based signal (trend or candle_dir) present, OR
+        # - Higher confidence if only pattern+indicator agree
+        has_trend_signal = 'trend' in signals
+        has_candle_dir_signal = 'candle_dir' in signals
+        if not has_trend_signal and not has_candle_dir_signal:
+            agent_logger.log_info(
+                f"⚠️ No trend signal present — only pattern/ML/indicator signals ({list(signals.keys())}). "
+                f"Requiring higher confidence threshold."
+            )
+            # Raise effective min confidence since we lack trend validation
+            no_trend_penalty = 0.08  # +8% confidence required
+            self._no_trend_penalty_active = True
+        else:
+            self._no_trend_penalty_active = False
+        
         # Calculate ensemble confidence
         ensemble_confidence = self._calculate_ensemble_confidence(signals, confidences, multi_tf_trend)
         
         # Determine direction (majority voting with confidence weighting)
         direction = self._determine_direction(signals, confidences)
         
-        if direction and ensemble_confidence >= self.min_ensemble_confidence:
+        # Apply no-trend penalty (raise effective min confidence)
+        effective_min_confidence = self.min_ensemble_confidence
+        if hasattr(self, '_no_trend_penalty_active') and self._no_trend_penalty_active:
+            effective_min_confidence += 0.08
+            agent_logger.log_info(
+                f"⚠️ No trend guard: raised min confidence from {self.min_ensemble_confidence:.2f} "
+                f"to {effective_min_confidence:.2f} (no trend/candle_dir signal present)"
+            )
+        
+        if direction and ensemble_confidence >= effective_min_confidence:
             # Log detailed breakdown
             signal_summary = []
-            for sig_type in ['trend', 'pattern', 'ml', 'indicator']:
+            for sig_type in ['trend', 'candle_dir', 'pattern', 'ml', 'indicator']:
                 if sig_type in signals:
                     sig_dir = signals[sig_type].upper()
                     sig_conf = confidences[sig_type]
@@ -311,6 +356,64 @@ class DecisionEngine:
             'all_aligned': all_aligned,
             'higher_medium_agree': higher_medium_agree
         }
+    
+    def _process_candle_direction_signal(self, candle_dir: Dict) -> Optional[Dict]:
+        """
+        Process candle direction analysis into a signal.
+        
+        This analyzes:
+        - Consecutive same-direction candles (streak)
+        - Candle body momentum (accelerating/decelerating bodies)
+        - Wick analysis (rejection at support/resistance)
+        - Candle velocity (net direction over last N candles)
+        
+        For synthetic indices (R_10..R_100), consecutive candles in the
+        same direction are a strong indicator of continued momentum.
+        """
+        direction = candle_dir.get('direction')
+        confidence = candle_dir.get('confidence', 0.0)
+        streak = candle_dir.get('streak', 0)
+        body_momentum = candle_dir.get('body_momentum', 'stable')
+        wick_signal = candle_dir.get('wick_signal', 'neutral')
+        velocity = candle_dir.get('candle_velocity', 0.0)
+        
+        if direction not in ('up', 'down'):
+            return None
+        
+        # Adjust confidence based on additional factors
+        adjusted_confidence = confidence
+        
+        # Boost if body momentum is accelerating (trend gaining strength)
+        if body_momentum == 'accelerating' and streak >= 2:
+            adjusted_confidence = min(adjusted_confidence + 0.10, 0.90)
+        
+        # Reduce if body momentum is decelerating (trend losing steam)
+        if body_momentum == 'decelerating' and streak >= 3:
+            adjusted_confidence = max(adjusted_confidence - 0.15, 0.0)
+        
+        # Boost if wick signal confirms direction
+        if direction == 'up' and wick_signal == 'rejection_down':
+            adjusted_confidence = min(adjusted_confidence + 0.10, 0.90)
+        if direction == 'down' and wick_signal == 'rejection_up':
+            adjusted_confidence = min(adjusted_confidence + 0.10, 0.90)
+        
+        # Reduce if wick signal contradicts direction (potential reversal)
+        if direction == 'up' and wick_signal == 'rejection_up':
+            adjusted_confidence = max(adjusted_confidence - 0.10, 0.0)
+        if direction == 'down' and wick_signal == 'rejection_down':
+            adjusted_confidence = max(adjusted_confidence - 0.10, 0.0)
+        
+        # Strong velocity confirms direction
+        if abs(velocity) > 0.5 and streak >= 2:
+            adjusted_confidence = min(adjusted_confidence + 0.05, 0.90)
+        
+        if adjusted_confidence >= 0.40:
+            return {
+                'direction': direction,
+                'confidence': min(adjusted_confidence, 0.90)
+            }
+        
+        return None
     
     def _process_ml_signal(self, ml_prediction: Dict) -> Optional[Dict]:
         """Process ML model prediction into signal.
@@ -492,9 +595,10 @@ class DecisionEngine:
         weighted_confidence = 0.0
         total_weight = 0.0
         
-        # Weight each signal (trend gets highest weight, patterns second)
+        # Weight each signal (trend gets highest weight, then candle_dir, patterns, ml, indicators)
         for signal_type, weight in [
             ('trend', self.trend_weight),
+            ('candle_dir', self.candle_dir_weight),
             ('pattern', self.pattern_weight),
             ('ml', self.ml_weight),
             ('indicator', self.indicator_weight)
@@ -567,6 +671,7 @@ class DecisionEngine:
         
         weights = {
             'trend': self.trend_weight,
+            'candle_dir': self.candle_dir_weight,
             'ml': self.ml_weight,
             'pattern': self.pattern_weight,
             'indicator': self.indicator_weight
