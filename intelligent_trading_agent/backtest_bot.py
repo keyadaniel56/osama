@@ -1,7 +1,6 @@
 """
 Backtest the fixed trading agent against historical market data.
-Replays price data from session logs and tests the improved decision engine,
-pattern recognition, RL system, and risk management.
+Tests the new MOMENTUM-FOLLOWING strategy (replaced old mean-reversion).
 
 Usage: python backtest_bot.py
 """
@@ -23,37 +22,30 @@ from features.pattern_recognition import ChartPatternRecognizer
 from market_analyzer import MarketAnalyzer
 from decision_engine import DecisionEngine
 from risk_manager import RiskManager
+from strategies.rise_fall import RiseFallStrategy
 from config import MODELS_DIR
 
 
 class BacktestRunner:
     """
     Replays historical price data through the bot's subsystems.
-    Tests: market analysis, pattern detection, decision engine, RL system, risk management.
+    Tests: market analysis, the NEW momentum-following strategy, decision engine, risk management.
     Does NOT connect to Deriv or place real trades.
     """
     
     def __init__(self, initial_stake: float = 0.35):
         self.initial_stake = initial_stake
         
-        # Initialize bot subsystems (same as agent.py)
+        # Initialize bot subsystems
         self.market_analyzer = MarketAnalyzer(window=100)
         self.pattern_recognizer = ChartPatternRecognizer(window=100)
+        self.rise_fall_strategy = RiseFallStrategy(base_stake=initial_stake)
         self.decision_engine = DecisionEngine()
         self.risk_manager = RiskManager()
         
         # Override risk manager's base stake
         self.risk_manager.base_stake = initial_stake
         self.risk_manager.current_stake = initial_stake
-        
-        # Try to import RL system (may not be available)
-        self.rl_system = None
-        try:
-            from reinforcement_learning import ReinforcementLearningSystem
-            self.rl_system = ReinforcementLearningSystem(initial_stake=initial_stake)
-            self.has_rl = True
-        except ImportError:
-            self.has_rl = False
         
         # Performance tracking
         self.trades = []
@@ -76,64 +68,77 @@ class BacktestRunner:
         self.session_files = [os.path.join(sessions_dir, f) for f in files]
         print(f"📂 Found {len(self.session_files)} historical session files")
     
-    def extract_price_data(self, session_file: str) -> List[float]:
-        """Extract price data from a session file."""
-        prices = []
-        try:
-            with open(session_file, 'r') as f:
-                data = json.load(f)
-            
-            trades = data.get('trades', [])
-            for trade in trades:
-                market_data = trade.get('market_data', {})
-                if market_data:
-                    price = market_data.get('price', 0)
-                    if price > 0:
-                        prices.append(price)
-                
-                features = market_data.get('features', {})
-                entry_price = trade.get('entry_price', 0)
-                if entry_price > 0 and isinstance(entry_price, (int, float)):
-                    prices.append(entry_price)
-        except Exception as e:
-            print(f"  ⚠️ Error extracting prices from {session_file}: {e}")
+    def load_latest_session_prices(self) -> List[float]:
+        """Extract all price data from the most recent session files."""
+        all_prices = []
         
-        return prices
+        # Only take the most recent 10 sessions (to avoid stale old data)
+        recent_files = self.session_files[-10:] if len(self.session_files) > 10 else self.session_files
+        
+        for session_file in recent_files:
+            try:
+                with open(session_file, 'r') as f:
+                    data = json.load(f)
+                
+                trades = data.get('trades', [])
+                for trade in trades:
+                    market_data = trade.get('market_data', {})
+                    if market_data:
+                        price = market_data.get('price', 0)
+                        if price > 0:
+                            all_prices.append(price)
+                    
+                    entry_price = trade.get('entry_price', 0)
+                    if entry_price > 0 and isinstance(entry_price, (int, float)):
+                        all_prices.append(entry_price)
+            except Exception as e:
+                print(f"  ⚠️ Error extracting from {session_file}: {e}")
+        
+        if all_prices:
+            print(f"📊 Extracted {len(all_prices)} price points from {len(recent_files)} sessions")
+            # Return sorted by time (oldest first)
+            return all_prices
+        
+        return []
     
     def generate_synthetic_prices(self, n_ticks: int = 5000, base_price: float = 4885.0) -> List[float]:
         """
         Generate realistic synthetic index prices.
-        Models R_10 behavior: rapid oscillations with occasional trends.
+        Models R_100 behavior with momentum persistence.
         """
         np.random.seed(42)
         prices = [base_price]
         
         for i in range(1, n_ticks):
-            # Random walk with R_10 characteristics
+            # Random walk with momentum persistence
             mean = 0.0
-            std = 0.5  # ~$0.50 per tick volatility
+            std = 0.5  # ~$0.50 per tick volatility for R_100
             
-            # Add occasional trends (every ~200 ticks)
-            if i % 200 < 30:  # 30-tick trend
-                mean = 0.3 if (i // 200) % 2 == 0 else -0.3
+            # Add momentum persistence (key characteristic of synthetic indices)
+            if len(prices) >= 5:
+                recent_trend = prices[-1] - prices[-5]
+                mean += recent_trend * 0.15  # 15% momentum persistence
             
-            # Add momentum effect
-            if len(prices) >= 3:
-                recent_trend = prices[-1] - prices[-3]
-                mean += recent_trend * 0.1  # 10% momentum
+            # Add occasional stronger trends (every ~300 ticks)
+            if i % 300 < 40:  # 40-tick trend
+                mean += 0.4 if (i // 300) % 2 == 0 else -0.4
+            
+            # Add mean-reversion resistance (prevents clean reversals at extremes)
+            if abs(mean) > 0.3:
+                mean *= 0.9  # Momentum resists fading
             
             # Generate next price
             change = np.random.normal(mean, std)
             new_price = prices[-1] + change
             
             # Keep prices in realistic range
-            new_price = max(base_price - 30, min(base_price + 30, new_price))
+            new_price = max(base_price - 50, min(base_price + 50, new_price))
             prices.append(new_price)
         
         return prices
     
-    def run(self, n_ticks: int = 3000, price_data: Optional[List[float]] = None):
-        """Run backtest simulation."""
+    def run(self, n_ticks: int = 3000, price_data: Optional[List[float]] = None, scenario_name: str = "default"):
+        """Run backtest simulation with momentum-following strategy."""
         if price_data is None:
             print(f"\n🔄 Generating {n_ticks} ticks of synthetic price data...")
             price_data = self.generate_synthetic_prices(n_ticks)
@@ -143,16 +148,14 @@ class BacktestRunner:
         
         print(f"   Price range: ${min(price_data):.2f} - ${max(price_data):.2f}")
         
-        # Track results
-        decisions = []
-        signals_log = []
-        patterns_log = []
-        
         WARMUP_TICKS = 200
         cooldown = 0
         trade_count = 0
         win_count = 0
         loss_count = 0
+        
+        # Track performance by market state
+        state_perf = {}
         
         for tick in range(n_ticks):
             price = price_data[tick]
@@ -169,41 +172,55 @@ class BacktestRunner:
             market_state = self.market_analyzer.detect_market_state()
             market_health = self.market_analyzer.calculate_market_health()
             
+            # Track state performance counters
+            if market_state not in state_perf:
+                state_perf[market_state] = {'opportunities': 0, 'trades': 0, 'wins': 0, 'profit': 0.0}
+            state_perf[market_state]['opportunities'] += 1
+            
             # Detect patterns
             patterns = self.pattern_recognizer.detect_all_patterns()
             
-            # Get ML prediction (simplified - use indicator-based)
+            # Get indicators
             indicators = features
             rsi = indicators.get('rsi', 50)
             bb_position = indicators.get('bb_position', 0.5)
             macd = indicators.get('macd_histogram', 0)
+            momentum_10 = indicators.get('momentum_10', 0.0)
+            price_vs_sma20 = indicators.get('price_vs_sma20', 0.0)
+            trend_strength = indicators.get('trend_strength', 0.0)
             
-            # Build mock ML prediction from indicators
-            if rsi > 60 and macd > 0:
-                ml_dir = 'up'
-                ml_conf = min((rsi - 50) / 50 + 0.5, 0.85)
-            elif rsi < 40 and macd < 0:
-                ml_dir = 'down'
-                ml_conf = min((50 - rsi) / 50 + 0.5, 0.85)
-            else:
-                ml_dir = None
-                ml_conf = 0.0
+            # ===== NEW MOMENTUM-FOLLOWING STRATEGY =====
+            # The strategy now follows momentum (not mean-reversion):
+            # - RSI > 58 + momentum > 0.2 + price above SMA → BUY RISE
+            # - RSI < 42 + momentum < -0.2 + price below SMA → BUY FALL
+            trade_dir = None
+            confidence = 0.0
             
-            ml_prediction = {
-                'direction': ml_dir,
-                'confidence': ml_conf
-            }
+            # Use the rise_fall strategy
+            signal = self.rise_fall_strategy.analyze({'features': features, 'price': price})
             
-            # Get pattern data
+            if signal.action == 'BUY':
+                trade_dir = 'up' if signal.contract_type == 'RISE' else 'down'
+                confidence = signal.confidence
+                
+                # Momentum consistency check (same as agent.py)
+                if rsi > 60 and momentum_10 < -0.1 and trade_dir == 'up':
+                    trade_dir = None
+                    confidence = 0.0
+                elif rsi < 40 and momentum_10 > 0.1 and trade_dir == 'down':
+                    trade_dir = None
+                    confidence = 0.0
+            
+            # Get pattern data for decision engine
             pattern_data = None
             if patterns:
                 pattern_data = {'patterns': {}}
                 for pname, pinfo in patterns.items():
-                    signal = pinfo.get('signal', '')
+                    sig = pinfo.get('signal', '')
                     ptype = None
-                    if 'bullish' in signal or 'up' in signal:
+                    if 'bullish' in sig or 'up' in sig:
                         ptype = 'bullish'
-                    elif 'bearish' in signal or 'down' in signal:
+                    elif 'bearish' in sig or 'down' in sig:
                         ptype = 'bearish'
                     else:
                         ptype = 'neutral'
@@ -212,23 +229,37 @@ class BacktestRunner:
                         'confidence': pinfo.get('confidence', 0.5)
                     }
             
-            # Trend guard check (simplified)
-            # Skip if RSI is extreme and would go against trend
-            if rsi > 70:
-                # Check multi-tf trend
-                tf_analysis = self.pattern_recognizer.multi_tf_analyzer.get_aligned_trend()
-                if tf_analysis.get('is_trending') and tf_analysis.get('primary_direction') == 'up':
-                    # Overbought + uptrend: let it ride
-                    pass
+            # Build ML prediction from indicators (simplified)
+            ml_dir = None
+            ml_conf = 0.0
+            if rsi > 60 and macd > 0 and momentum_10 > 0.2:
+                ml_dir = 'up'
+                ml_conf = min(0.5 + abs(momentum_10), 0.85)
+            elif rsi < 40 and macd < 0 and momentum_10 < -0.2:
+                ml_dir = 'down'
+                ml_conf = min(0.5 + abs(momentum_10), 0.85)
             
-            # Make decision
-            trade_dir, confidence = self.decision_engine.make_decision(
+            ml_prediction = {'direction': ml_dir, 'confidence': ml_conf}
+            
+            # Use decision engine
+            de_trade_dir, de_confidence = self.decision_engine.make_decision(
                 ml_prediction=ml_prediction,
                 patterns=pattern_data,
                 indicators=indicators,
                 market_state=market_state,
                 market_health=market_health
             )
+            
+            # Use decision engine's direction if it's confident
+            if de_trade_dir and de_confidence > confidence:
+                trade_dir = de_trade_dir
+                confidence = de_confidence
+            
+            # Ranging market guard
+            if trade_dir and 'ranging' in market_state:
+                if confidence < 0.80:
+                    trade_dir = None
+                    confidence = 0.0
             
             # Check risk constraints
             can_trade = self.risk_manager.should_trade(confidence, market_health)
@@ -237,37 +268,10 @@ class BacktestRunner:
             if cooldown > 0:
                 cooldown -= 1
             
-            # Record decisions periodically
-            if tick % 500 == 0:
-                decisions.append({
-                    'tick': tick,
-                    'price': price,
-                    'state': market_state,
-                    'health': market_health,
-                    'direction': trade_dir,
-                    'confidence': confidence,
-                    'rsi': rsi,
-                    'bb_pos': bb_position,
-                    'patterns': list(patterns.keys()) if patterns else [],
-                    'macro_hist': macd,
-                })
-            
-            # Log patterns detected
-            if patterns and tick % 300 == 0:
-                pattern_names = list(patterns.keys())
-                patterns_log.append({
-                    'tick': tick,
-                    'patterns': pattern_names,
-                    'signals': [p.get('signal', '') for p in patterns.values()],
-                    'confidences': [p.get('confidence', 0) for p in patterns.values()]
-                })
-            
             # Simulate trade
             if (trade_dir and confidence >= 0.65 and can_trade and cooldown == 0 
-                and len(self.trades) < 50):  # Limit to 50 trades for backtest
+                and len(self.trades) < 50):  # Limit trades for backtest
                 
-                # Determine direction prediction
-                prediction = 'RISE' if trade_dir == 'up' else 'FALL'
                 contract_type = 'CALL' if trade_dir == 'up' else 'PUT'
                 
                 # Calculate position size
@@ -276,33 +280,25 @@ class BacktestRunner:
                     confidence, volatility, trade_direction=trade_dir
                 )
                 
-                # Check if RL system allows this trade
-                rl_blocks = False
-                if self.has_rl and self.rl_system:
-                    rl_should, _, _ = self.rl_system.decide(features)
-                    if not rl_should and self.rl_system.rl_engine.training_count > 5:
-                        rl_blocks = True
-                
-                if rl_blocks:
-                    continue
-                
-                # Look ahead contract_duration ticks to see outcome
-                contract_duration_ticks = 300  # 5 minutes ≈ 300 ticks
+                # Look ahead to see outcome (300 ticks ≈ 5 min contract)
+                contract_duration_ticks = 300
                 end_tick = min(tick + contract_duration_ticks, n_ticks - 1)
                 future_price = price_data[end_tick]
                 
                 # Determine if trade wins
+                # Real Deriv payout: ~80% of stake on win, lose stake on loss
+                price_moved_up = future_price > price
                 if contract_type == 'CALL':
-                    won = future_price > price + (position_size * 0.01)  # Need price to go up enough
+                    won = price_moved_up
                 else:
-                    won = future_price < price - (position_size * 0.01)
+                    won = not price_moved_up
                 
-                # Calculate profit
+                # Calculate profit with realistic Deriv payout structure
                 if won:
-                    profit = position_size * 0.80  # ~80% payout
+                    profit = position_size * 0.80  # ~80% payout (standard for Rise/Fall)
                     win_count += 1
                 else:
-                    profit = -position_size
+                    profit = -position_size  # Lose entire stake
                     loss_count += 1
                 
                 # Update equity
@@ -315,7 +311,6 @@ class BacktestRunner:
                     'tick': tick,
                     'price': price,
                     'direction': trade_dir,
-                    'prediction': prediction,
                     'confidence': confidence,
                     'position': position_size,
                     'won': won,
@@ -323,16 +318,20 @@ class BacktestRunner:
                     'state': market_state,
                     'rsi': rsi,
                     'bb_pos': bb_position,
+                    'momentum': momentum_10,
                     'volatility': volatility,
+                    'trend_strength': trend_strength,
+                    'price_vs_sma20': price_vs_sma20,
                     'patterns': list(patterns.keys()) if patterns else [],
                 })
                 
+                # Track state performance
+                state_perf[market_state]['trades'] += 1
+                state_perf[market_state]['wins'] += 1 if won else 0
+                state_perf[market_state]['profit'] += profit
+                
                 self.pnl_history.append(self.equity)
                 trade_count += 1
-                
-                # Update RL system
-                if self.has_rl and self.rl_system:
-                    self.rl_system.record_trade_result(profit, won, features)
                 
                 # Update risk manager
                 self.risk_manager.record_trade_result(position_size, won, profit)
@@ -341,14 +340,14 @@ class BacktestRunner:
                 cooldown = 50  # ticks
         
         # Print results
-        self.print_results(decisions, patterns_log)
+        self.print_results(scenario_name, state_perf)
         
         return self.trades, self.pnl_history
     
-    def print_results(self, decisions: List[Dict], patterns_log: List[Dict]):
+    def print_results(self, scenario_name: str, state_perf: Dict):
         """Print backtest results."""
         print("\n" + "="*80)
-        print("📊 BACKTEST RESULTS")
+        print(f"📊 BACKTEST RESULTS: {scenario_name}")
         print("="*80)
         
         # Trade summary
@@ -370,60 +369,38 @@ class BacktestRunner:
         print(f"   Max Drawdown: {max_drawdown:.1f}%")
         print(f"   Final Equity: ${self.equity:.2f}")
         print(f"   Peak Equity: ${self.peak_equity:.2f}")
-        print(f"   Return: {((self.equity / (self.initial_stake * 100)) - 1) * 100:.1f}%")
-        
-        # Stake growth
-        stake_growth = 1.0
-        if self.has_rl and self.rl_system:
-            stake = self.rl_system.compounder.get_current_stake()
-            stake_growth = stake / self.initial_stake
-            print(f"\n💰 STAKE GROWTH: ${self.initial_stake:.2f} → ${stake:.2f} ({stake_growth:.1f}x)")
-            
-            rl_stats = self.rl_system.get_stats()
-            print(f"🧠 RL TRAINING: {rl_stats['rl_trained']} batches, ε={rl_stats['rl_epsilon']:.3f}")
+        print(f"   ROI: {((self.equity / (self.initial_stake * 100)) - 1) * 100:.1f}%")
         
         # Performance by market state
         print(f"\n📊 PERFORMANCE BY MARKET STATE:")
-        states = {}
-        for t in self.trades:
-            s = t['state']
-            if s not in states:
-                states[s] = {'trades': 0, 'wins': 0, 'profit': 0.0}
-            states[s]['trades'] += 1
-            states[s]['wins'] += 1 if t['won'] else 0
-            states[s]['profit'] += t['profit']
-        
-        for state, data in sorted(states.items(), key=lambda x: x[1]['trades'], reverse=True):
-            wr = data['wins'] / data['trades'] * 100
-            print(f"   {state:20} | {data['trades']:3} trades | {wr:5.1f}% WR | ${data['profit']:+.2f}")
+        print(f"   {'STATE':20} | {'OPPS':>5} | {'TRADES':>6} | {'WINS':>4} | {'WR':>5} | {'PnL':>8}")
+        print(f"   {'-'*20} | {'-'*5} | {'-'*6} | {'-'*4} | {'-'*5} | {'-'*8}")
+        for state, data in sorted(state_perf.items(), key=lambda x: x[1]['trades'], reverse=True):
+            if data['trades'] > 0:
+                wr = data['wins'] / data['trades'] * 100
+                opp_rate = data['trades'] / data['opportunities'] * 100 if data['opportunities'] > 0 else 0
+                print(f"   {state:20} | {data['opportunities']:5} | {data['trades']:6} | {data['wins']:4} | {wr:4.1f}% | ${data['profit']:+>7.2f}")
         
         # Performance by RSI zone
         print(f"\n📊 PERFORMANCE BY RSI ZONE:")
-        zones = {'Oversold (<30)': [], 'Neutral (30-70)': [], 'Overbought (>70)': []}
+        zones = {'Oversold (<30)': [], 'Moderately Low (30-40)': [], 'Neutral (40-60)': [], 'Moderately High (60-70)': [], 'Overbought (>70)': []}
         for t in self.trades:
             if t['rsi'] < 30:
                 zones['Oversold (<30)'].append(t)
-            elif t['rsi'] > 70:
-                zones['Overbought (>70)'].append(t)
+            elif t['rsi'] < 40:
+                zones['Moderately Low (30-40)'].append(t)
+            elif t['rsi'] < 60:
+                zones['Neutral (40-60)'].append(t)
+            elif t['rsi'] < 70:
+                zones['Moderately High (60-70)'].append(t)
             else:
-                zones['Neutral (30-70)'].append(t)
+                zones['Overbought (>70)'].append(t)
         
         for zone, trades in zones.items():
             if trades:
                 wr = sum(1 for t in trades if t['won']) / len(trades) * 100
                 pnl = sum(t['profit'] for t in trades)
-                print(f"   {zone:20} | {len(trades):3} trades | {wr:5.1f}% WR | ${pnl:+.2f}")
-        
-        # Pattern detection stats
-        all_patterns = {}
-        for entry in patterns_log:
-            for p in entry['patterns']:
-                all_patterns[p] = all_patterns.get(p, 0) + 1
-        
-        if all_patterns:
-            print(f"\n🔍 PATTERNS DETECTED ({len(all_patterns)} types):")
-            for pname, count in sorted(all_patterns.items(), key=lambda x: x[1], reverse=True)[:10]:
-                print(f"   {pname:25} | {count:4} times")
+                print(f"   {zone:25} | {len(trades):3} trades | {wr:5.1f}% WR | ${pnl:+>7.2f}")
         
         # Consecutive loss analysis
         max_consec_losses = 0
@@ -437,22 +414,18 @@ class BacktestRunner:
         
         print(f"\n⚠️  RISK METRICS:")
         print(f"   Max Consecutive Losses: {max_consec_losses}")
-        print(f"   Current Stake: ${self.risk_manager.current_stake:.2f}")
         
-        # Print recent decisions
-        print(f"\n📋 SAMPLE DECISIONS (every 500 ticks):")
-        for d in decisions[:10]:
-            pat_str = ", ".join(d['patterns'][:3]) if d['patterns'] else "none"
-            if len(d['patterns']) > 3:
-                pat_str += f" +{len(d['patterns'])-3} more"
-            print(f"   Tick {d['tick']:5} | ${d['price']:.2f} | State: {d['state']:15} | "
-                  f"Health: {d['health']:.0f} | RSI: {d['rsi']:.0f} | "
-                  f"Dir: {str(d['direction']):4} | Patterns: {pat_str}")
+        # Analyze what worked
+        print(f"\n📋 MOMENTUM ANALYSIS (last 10 trades):")
+        for t in self.trades[-10:]:
+            mark = "✓" if t['won'] else "✗"
+            print(f"   {mark} {t['direction']:4} | RSI={t['rsi']:.0f} | mom={t['momentum']:+.3f} | "
+                  f"conf={t['confidence']:.2f} | state={t['state']:15} | ${t['profit']:+.2f}")
         
         print("\n" + "="*80)
     
     def calculate_max_drawdown(self) -> float:
-        """Calculate maximum drawdown percentage."""
+        """Calculate maximum drawdown percentage from pnl history."""
         if not self.pnl_history:
             return 0.0
         peak = self.pnl_history[0]
@@ -475,51 +448,60 @@ class BacktestRunner:
 
 def main():
     """Run backtest with multiple scenarios."""
-    print("🤖 TRADING BOT BACKTEST")
+    print("🤖 TRADING BOT BACKTEST - NEW MOMENTUM-FOLLOWING STRATEGY")
     print("=" * 80)
     
+    # Scenario 1: Synthetic data simulating R_100 behavior
+    print("\n" + "=" * 80)
+    print("📈 SCENARIO 1: Synthetic R_100 Market (momentum-driven)")
+    print("=" * 80)
     runner = BacktestRunner(initial_stake=0.35)
+    runner.run(n_ticks=5000, scenario_name="Synthetic R_100")
     
-    # Scenario 1: Synthetic data (R_10-like)
+    # Scenario 2: Historical session data (replay actual prices from bot's history)
     print("\n" + "=" * 80)
-    print("📈 SCENARIO 1: Synthetic R_10 Market Data")
+    print("📉 SCENARIO 2: Historical Session Data Replay")
     print("=" * 80)
-    runner.run(n_ticks=5000)
-    
-    # Scenario 2: Volatile market
-    print("\n" + "=" * 80)
-    print("📉 SCENARIO 2: High Volatility Market")
-    print("=" * 80)
-    np.random.seed(123)
-    volatile_prices = [4885.0]
-    for i in range(1, 3000):
-        change = np.random.normal(0, 1.2)  # Higher volatility
-        if i % 150 < 20:
-            change += 0.5 if (i // 150) % 2 == 0 else -0.5
-        volatile_prices.append(max(4850, min(4920, volatile_prices[-1] + change)))
-    
     runner2 = BacktestRunner(initial_stake=0.35)
-    runner2.run(n_ticks=3000, price_data=volatile_prices)
+    historical_prices = runner2.load_latest_session_prices()
+    if historical_prices:
+        runner2.run(price_data=historical_prices, scenario_name="Historical Replay")
+    else:
+        print("⚠️ No historical session data available. Generating synthetic data instead.")
+        runner2.run(n_ticks=3000, scenario_name="Historical (fallback synthetic)")
     
-    # Scenario 3: Trending market
+    # Scenario 3: Strong trending market
     print("\n" + "=" * 80)
-    print("📈 SCENARIO 3: Strong Trending Market")
+    print("📈 SCENARIO 3: Strong Trending Market (best case for momentum)")
     print("=" * 80)
     np.random.seed(456)
-    trend_prices = [4885.0]
+    trend_prices = [541.0]
     trend_direction = 1
     for i in range(1, 3000):
-        # Strong bias for first half (up), then reverse (down)
         if i == 1500:
             trend_direction = -1
         mean = trend_direction * 0.4
-        change = np.random.normal(mean, 0.6)
-        trend_prices.append(max(4840, min(4940, trend_prices[-1] + change)))
+        change = np.random.normal(mean, 0.5)
+        trend_prices.append(max(530, min(555, trend_prices[-1] + change)))
     
     runner3 = BacktestRunner(initial_stake=0.35)
-    runner3.run(n_ticks=3000, price_data=trend_prices)
+    runner3.run(n_ticks=3000, price_data=trend_prices, scenario_name="Trending Market")
     
-    print("\n✅ BACKTEST COMPLETE")
+    # Scenario 4: Ranging/churning market (previously worst case)
+    print("\n" + "=" * 80)
+    print("📊 SCENARIO 4: Ranging Market (previously 40% WR)")
+    print("=" * 80)
+    np.random.seed(789)
+    range_prices = [541.0]
+    for i in range(1, 3000):
+        change = np.random.normal(0, 0.3)
+        range_prices.append(max(539, min(543, range_prices[-1] + change)))
+    
+    runner4 = BacktestRunner(initial_stake=0.35)
+    runner4.run(n_ticks=3000, price_data=range_prices, scenario_name="Ranging Market")
+    
+    print("\n" + "=" * 80)
+    print("✅ BACKTEST COMPLETE")
     print("=" * 80)
 
 

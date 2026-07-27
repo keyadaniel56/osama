@@ -1,13 +1,13 @@
 {
   "initial_stake": 0.35,
   "current_stake": 0.35,
-  "equity_peak": 35.0,
+  "equity_peak": 36.29999999999996,
   "last_growth_equity": 35.0,
   "starting_equity": 35.0,
-  "current_equity": 35.0,
-  "wins": 0,
-  "losses": 0,
-  "trade_count": 0,
-  "recent_win_rate": 0.5,
-  "timestamp": "2026-07-21T08:21:32.831967"
+  "current_equity": 34.79999999999994,
+  "wins": 48,
+  "losses": 46,
+  "trade_count": 94,
+  "recent_win_rate": 0.4,
+  "timestamp": "2026-07-27T11:39:42.705769"
 }

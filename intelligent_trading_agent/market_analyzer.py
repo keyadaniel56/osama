@@ -151,6 +151,7 @@ class MarketAnalyzer:
         Calculate market health score (0-100).
         Score represents attractiveness for trading.
         Higher = better trading conditions.
+        IMPROVED: Penalizes ranging markets, rewards trending markets.
         """
         if len(self.price_history) < 20:
             return 50.0
@@ -170,33 +171,53 @@ class MarketAnalyzer:
         # Trend strength component (10-20 range)
         trend_strength = features.get('trend_strength', 0.0)
         if trend_strength > 0.05:
-            health += 10.0
+            health += 15.0  # Increased: strong trend = healthy
         elif trend_strength > 0.02:
-            health += 5.0
+            health += 8.0   # Increased: moderate trend = fair
+        else:
+            health -= 5.0   # NEW: very low trend strength = ranging = penalty
         
         # Momentum component (5-15 range)
         momentum = features.get('momentum_positive', 0.0)
         if momentum > 0.5:
             health += 10.0
         
+        # Additional: directional momentum strength
+        momentum_10 = features.get('momentum_10', 0.0)
+        if abs(momentum_10) > 0.5:
+            health += 8.0   # Strong directional momentum = trending = good
+        elif abs(momentum_10) < 0.1:
+            health -= 5.0   # Very weak momentum = ranging = penalty
+        
         # Price position component (5-10 range)
         bb_position = features.get('bb_position', 0.5)
         if 0.2 < bb_position < 0.8:  # Not at extremes
             health += 5.0
         
-        # RSI component (5-10 range)
+        # RSI component (5-10 range) - REWARD trend emergence, PENALIZE strict neutrality (ranging)
         rsi = features.get('rsi', 50.0)
-        if 40 < rsi < 60:  # Neutral RSI is good
-            health += 5.0
-        elif 30 < rsi < 70:
-            health += 2.0
+        if 45 <= rsi <= 55:
+            health -= 5.0   # Very neutral RSI = ranging = penalty
+        elif 35 <= rsi <= 65:
+            health += 3.0   # Moderate = slightly healthy
+        elif 25 <= rsi <= 35 or 65 <= rsi <= 75:
+            health += 8.0   # Emerging trend = healthy
+        elif rsi > 75 or rsi < 25:
+            health -= 3.0   # Extreme = potentially unhealthy
         
         # MA alignment component (5-10 range)
         if features.get('ma_crossover', 0.0) > 0.5:
             health += 7.0
         
-        # Cap at 100
-        return min(health, 100.0)
+        # Price vs SMA - trending discrimination
+        price_vs_sma20 = features.get('price_vs_sma20', 0.0)
+        if abs(price_vs_sma20) > 0.001:
+            health += 5.0   # Price clearly above/below SMA = trending = good
+        else:
+            health -= 3.0   # Price hugging SMA = ranging = penalty
+        
+        # Cap at 100, floor at 0
+        return max(0, min(health, 100.0))
     
     def get_market_regime(self) -> Dict[str, any]:
         """
